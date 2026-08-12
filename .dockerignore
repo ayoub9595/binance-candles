@@ -1,0 +1,9 @@
+node_modules
+**/node_modules
+.git
+**/.env
+!**/.env.example
+dist
+**/dist
+*.log
+.DS_Store

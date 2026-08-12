@@ -1,0 +1,93 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: binance-candles-mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_DB_NAME}
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - candles-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongo-express:
+    image: mongo-express:latest
+    container_name: binance-candles-mongo-express
+    restart: unless-stopped
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_MONGODB_ADMINUSERNAME: ${MONGO_ROOT_USER}
+      ME_CONFIG_MONGODB_ADMINPASSWORD: ${MONGO_ROOT_PASSWORD}
+      ME_CONFIG_BASICAUTH_USERNAME: ${MONGO_EXPRESS_USER}
+      ME_CONFIG_BASICAUTH_PASSWORD: ${MONGO_EXPRESS_PASSWORD}
+    ports:
+      - "8081:8081"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - candles-net
+
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: binance-candles-server
+    restart: unless-stopped
+    environment:
+      PORT: 4000
+      MONGODB_URI: mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@mongo:27017
+      DB_NAME: ${MONGO_DB_NAME}
+      CORS_ORIGIN: http://localhost:5173
+      BINANCE_SYMBOLS: BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT
+      BINANCE_INTERVALS: 5m,15m,1h,4h
+      BACKFILL_LIMIT: 1000
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./server/src:/app/server/src
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - candles-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    container_name: binance-candles-client
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE_URL: http://localhost:4000
+      VITE_SOCKET_URL: http://localhost:4000
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./client/src:/app/client/src
+    depends_on:
+      - server
+    networks:
+      - candles-net
+
+volumes:
+  mongo_data:
+
+networks:
+  candles-net:
+    driver: bridge

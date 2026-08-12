@@ -1,0 +1,203 @@
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  height: 100%;
+  background: #0d0f14;
+  color: #d1d4dc;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.chart-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  font-size: 14px;
+  border-bottom: 1px solid #1e222d;
+}
+
+.status.connected {
+  color: #26a69a;
+}
+
+.status.disconnected {
+  color: #ef5350;
+}
+
+.chart-container {
+  flex: 1;
+  position: relative;
+}
+
+.loading, .error {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.error {
+  color: #ef5350;
+}
+
+.selector-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.selector-bar select {
+  background: #1e222d;
+  color: #d1d4dc;
+  border: 1px solid #2a2e39;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.interval-toggle {
+  display: flex;
+  gap: 4px;
+}
+
+.interval-toggle button {
+  background: #1e222d;
+  color: #d1d4dc;
+  border: 1px solid #2a2e39;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.interval-toggle button:hover {
+  border-color: #26a69a;
+}
+
+.interval-toggle button.active {
+  background: #26a69a;
+  border-color: #26a69a;
+  color: #0d0f14;
+  font-weight: 600;
+}
+
+.app-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100%;
+}
+
+.app-status button {
+  background: #1e222d;
+  color: #d1d4dc;
+  border: 1px solid #2a2e39;
+  border-radius: 4px;
+  padding: 6px 16px;
+  cursor: pointer;
+}
+
+.chart-controls {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.trendline-toggles {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.trendline-label {
+  color: #787b86;
+  font-size: 12px;
+  margin-right: 2px;
+}
+
+.trendline-chip {
+  background: #1e222d;
+  color: #d1d4dc;
+  border: 1px solid #2a2e39;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.trendline-chip:hover {
+  border-color: var(--chip-color);
+}
+
+.trendline-chip.active {
+  background: var(--chip-color);
+  border-color: var(--chip-color);
+  color: #0d0f14;
+  font-weight: 600;
+}
+
+.status.replaying {
+  color: #fb8c00;
+}
+
+.replay-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.replay-label {
+  color: #787b86;
+  font-size: 12px;
+  margin-right: 2px;
+}
+
+.replay-controls input[type='datetime-local'],
+.replay-controls select,
+.replay-controls button {
+  background: #1e222d;
+  color: #d1d4dc;
+  border: 1px solid #2a2e39;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.replay-controls input[type='datetime-local'] {
+  color-scheme: dark;
+}
+
+.replay-controls button {
+  cursor: pointer;
+}
+
+.replay-controls button:hover:not(:disabled) {
+  border-color: #fb8c00;
+}
+
+.replay-controls button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.replay-progress {
+  color: #787b86;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.replay-error {
+  color: #ef5350;
+  font-size: 12px;
+}
