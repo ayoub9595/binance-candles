@@ -1,9 +1,10 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import { createChart, createSeriesMarkers, CandlestickSeries, LineSeries, LineStyle } from 'lightweight-charts';
 import { RectanglesPrimitive } from './rectanglesPrimitive.js';
+import { DrawingsPrimitive } from './drawingsPrimitive.js';
 
 export const CandlestickChart = forwardRef(function CandlestickChart(
-  { initialData, trendlines, markers, segments, boxes },
+  { initialData, trendlines, markers, segments, boxes, drawings, selectedDrawingId, onChartClick },
   ref
 ) {
   const containerRef = useRef(null);
@@ -13,6 +14,11 @@ export const CandlestickChart = forwardRef(function CandlestickChart(
   const markersApiRef = useRef(null);
   const segmentSeriesRef = useRef(new Map());
   const boxesPrimitiveRef = useRef(null);
+  const drawingsPrimitiveRef = useRef(null);
+  // Click handler lives in a ref so subscribing once at mount still calls the
+  // latest callback — resubscribing per render would thrash the chart.
+  const onChartClickRef = useRef(onChartClick);
+  onChartClickRef.current = onChartClick;
 
   useEffect(() => {
     const chart = createChart(containerRef.current, {
@@ -51,6 +57,21 @@ export const CandlestickChart = forwardRef(function CandlestickChart(
     markersApiRef.current = createSeriesMarkers(series, []);
     boxesPrimitiveRef.current = new RectanglesPrimitive();
     series.attachPrimitive(boxesPrimitiveRef.current);
+    // Attached after the zone boxes so user drawings paint on top of them.
+    drawingsPrimitiveRef.current = new DrawingsPrimitive();
+    series.attachPrimitive(drawingsPrimitiveRef.current);
+
+    // Clicks carry chart coordinates the drawing tools need: the bar time and
+    // the price under the cursor. `point` is missing when the click lands
+    // outside the pane, and time is null past the last bar.
+    const handleClick = (param) => {
+      const cb = onChartClickRef.current;
+      if (!cb || !param.point || param.time == null) return;
+      const price = series.coordinateToPrice(param.point.y);
+      if (price == null) return;
+      cb({ time: param.time, price });
+    };
+    chart.subscribeClick(handleClick);
 
     series.setData(initialData || []);
     if (initialData?.length) {
@@ -63,10 +84,12 @@ export const CandlestickChart = forwardRef(function CandlestickChart(
     }
 
     return () => {
+      chart.unsubscribeClick(handleClick);
       chart.remove();
       chartInstanceRef.current = null;
       markersApiRef.current = null;
       boxesPrimitiveRef.current = null;
+      drawingsPrimitiveRef.current = null;
       segmentSeriesRef.current.clear();
       trendlineSeriesRef.current.clear();
       lastDataRef.current.clear();
@@ -166,6 +189,11 @@ export const CandlestickChart = forwardRef(function CandlestickChart(
   useEffect(() => {
     boxesPrimitiveRef.current?.setRects(boxes || []);
   }, [boxes]);
+
+  // User drawings (positions, lines, boxes) — their own primitive layer.
+  useEffect(() => {
+    drawingsPrimitiveRef.current?.setDrawings(drawings || [], selectedDrawingId ?? null);
+  }, [drawings, selectedDrawingId]);
 
   // Horizontal inducement level lines, one short 2-point LineSeries per
   // level: a solid bar from the swing that built the level to the candle that

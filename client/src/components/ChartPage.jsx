@@ -8,6 +8,9 @@ import { computeMarketStructure } from '../utils/marketStructure.js';
 import { computeFvgOrderBlocks } from '../utils/orderBlocks.js';
 import { computeFvgs } from '../utils/fvg.js';
 import { useBarReplay, intervalToSec } from '../hooks/useBarReplay.js';
+import { useHtfBias } from '../hooks/useHtfBias.js';
+import { useDrawingTools } from '../hooks/useDrawingTools.js';
+import { DrawingToolbar } from './DrawingToolbar.jsx';
 import { CandlestickChart } from './CandlestickChart.jsx';
 import { SymbolIntervalSelector } from './SymbolIntervalSelector.jsx';
 import { TrendlineToggles } from './TrendlineToggles.jsx';
@@ -17,6 +20,10 @@ const TRENDLINE_PALETTE = ['#ab47bc', '#fb8c00', '#42a5f5', '#66bb6a', '#ec407a'
 
 // Candles loaded for the live chart (~15.6 days of 15m, ~5.2 days of 5m).
 const LIVE_HISTORY_LIMIT = 1500;
+
+// Higher timeframes whose structure trend forms the trading bias. Ordered
+// highest-first, which is how the panel reads top-down.
+const HTF_BIAS_INTERVALS = ['4h', '1h'];
 
 export function ChartPage({ symbol, interval, instruments, onSymbolChange, onIntervalChange }) {
   const [history, setHistory] = useState(null);
@@ -30,6 +37,7 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
   const [msEnabled, setMsEnabled] = useState(false);
   const [obEnabled, setObEnabled] = useState(false);
   const [fvgEnabled, setFvgEnabled] = useState(false);
+  const [htfEnabled, setHtfEnabled] = useState(false);
   // The bars currently on the main chart, mirrored for the SMC computations
   // (inducement, market structure, order blocks): live history + socket
   // ticks, or replay context + revealed bars. Kept in a ref (mutated in hot
@@ -342,6 +350,34 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
   }, [structure]);
   const msTrend = structure ? structure.trend : null;
 
+  // --- Higher-timeframe bias (4h + 1h) for trading the lower timeframe. The
+  // panel is context, not an overlay: it reports each HTF's structure trend so
+  // a 15m entry can be judged with or against the bigger move.
+  //
+  // In replay the cursor's wall-clock time cuts the HTF candles, so the panel
+  // shows the bias as it stood then — same no-lookahead guarantee as the rest.
+  // Live (cursor null) it just uses everything loaded.
+  const htfCursorSec = useMemo(() => {
+    if (!replayActive) return null;
+    const revealed = replay.cursor;
+    if (revealed < 0) return replay.contextBars?.length ? replay.contextBars[replay.contextBars.length - 1].time : 0;
+    // The revealed bar's CLOSE is "now" in replay terms.
+    return mainBarsRef.current.length
+      ? mainBarsRef.current[mainBarsRef.current.length - 1].time + intervalToSec(interval)
+      : 0;
+  }, [replayActive, replay.cursor, replay.contextBars, interval, barsVersion]);
+
+  const htf = useHtfBias({
+    symbol,
+    intervals: HTF_BIAS_INTERVALS,
+    cursorSec: htfCursorSec,
+    active: htfEnabled,
+  });
+
+  // Manual drawing tools (long/short positions, trend lines, boxes). Stored
+  // per symbol+interval in memory for the session.
+  const draw = useDrawingTools({ symbol, interval });
+
   // In replay mode the trendlines are computed from the hook's cursor-cut
   // arrays, so the channels only "know" what had happened at the replay time.
   const activeTrendlineCandles = replayActive ? replay.trendlineCandles : trendlineCandles;
@@ -439,10 +475,33 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
             >
               FVG
             </button>
+            <button
+              type="button"
+              title="Show 4h and 1h structure trend as higher-timeframe bias for lower-timeframe entries"
+              className={`trendline-chip ${htfEnabled ? 'active' : ''}`}
+              style={{ '--chip-color': '#66bb6a' }}
+              onClick={() => setHtfEnabled((v) => !v)}
+            >
+              HTF
+            </button>
           </div>
           <ReplayControls replay={replay} onExit={replay.exit} />
         </div>
         <div className="status-group">
+          {htfEnabled && (
+            <span className={`htf-bias ${htf.allBullish ? 'aligned-bull' : htf.allBearish ? 'aligned-bear' : ''}`}>
+              {HTF_BIAS_INTERVALS.map((i) => {
+                const t = htf.bias[i];
+                return (
+                  <span key={i} className={`htf-cell htf-${t ?? 'none'}`} title={`${i} market structure trend`}>
+                    {i} {t === 'bullish' ? '▲' : t === 'bearish' ? '▼' : '—'}
+                  </span>
+                );
+              })}
+              {htf.allBullish && <span className="htf-verdict bull">ALIGNED BULL</span>}
+              {htf.allBearish && <span className="htf-verdict bear">ALIGNED BEAR</span>}
+            </span>
+          )}
           {msEnabled && (
             <span className={`status structure-${msTrend ?? 'none'}`}>
               {msTrend === 'bullish' ? 'Bullish ▲' : msTrend === 'bearish' ? 'Bearish ▼' : 'Structure —'}
@@ -457,7 +516,18 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
           )}
         </div>
       </div>
-      <div className="chart-container">
+      <div className={`chart-container ${draw.tool ? 'drawing' : ''}`}>
+        {/* Drawing rail overlays the chart's left edge, TradingView-style.
+            Rendered whenever a chart is on screen (live or replay). */}
+        {(history || replayActive) && (
+          <DrawingToolbar
+            tool={draw.tool}
+            onSelect={draw.selectTool}
+            awaiting={draw.awaiting}
+            count={draw.drawings.length}
+            onClear={draw.clearAll}
+          />
+        )}
         {/* `error` belongs to the live history fetch — it must not blank an
             active replay, which fetches its own data. */}
         {!replayActive && error && <div className="error">{error}</div>}
@@ -474,6 +544,9 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
             markers={msMarkers}
             segments={idmLineSegments}
             boxes={chartBoxes}
+            drawings={draw.drawings}
+            selectedDrawingId={draw.selectedId}
+            onChartClick={draw.handleChartClick}
           />
         )}
         {replayActive && replay.loading && (
@@ -490,6 +563,9 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
             markers={msMarkers}
             segments={idmLineSegments}
             boxes={chartBoxes}
+            drawings={draw.drawings}
+            selectedDrawingId={draw.selectedId}
+            onChartClick={draw.handleChartClick}
           />
         )}
       </div>

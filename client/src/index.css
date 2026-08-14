@@ -171,6 +171,165 @@ html, body, #root {
   color: #787b86;
 }
 
+/* Higher-timeframe bias panel: one cell per timeframe plus an alignment
+   verdict when every timeframe agrees. */
+.htf-bias {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  border: 1px solid #2a2e39;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.htf-bias.aligned-bull {
+  border-color: rgba(38, 166, 154, 0.6);
+  background: rgba(38, 166, 154, 0.1);
+}
+
+.htf-bias.aligned-bear {
+  border-color: rgba(239, 83, 80, 0.6);
+  background: rgba(239, 83, 80, 0.1);
+}
+
+.htf-cell {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.htf-bullish {
+  color: #26a69a;
+}
+
+.htf-bearish {
+  color: #ef5350;
+}
+
+.htf-none {
+  color: #787b86;
+}
+
+.htf-verdict {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.htf-verdict.bull {
+  color: #26a69a;
+}
+
+.htf-verdict.bear {
+  color: #ef5350;
+}
+
+/* ── TradingView-style drawing rail ────────────────────────────────────────
+   A narrow vertical icon strip pinned to the left edge of the chart pane. */
+.draw-rail {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  background: #131722;
+  border: 1px solid #2a2e39;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+.draw-rail-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #b2b5be;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.draw-rail-btn:hover {
+  background: #2a2e39;
+  color: #d1d4dc;
+}
+
+.draw-rail-btn.active {
+  background: rgba(41, 98, 255, 0.16);
+  color: #2962ff;
+}
+
+.draw-rail-btn.danger:hover {
+  background: rgba(239, 83, 80, 0.16);
+  color: #ef5350;
+}
+
+.draw-rail-sep {
+  width: 20px;
+  height: 1px;
+  margin: 3px 0;
+  background: #2a2e39;
+}
+
+/* Hover tooltip: title on the first line, hint in smaller muted text. */
+.draw-rail-tip {
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  display: none;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 8px;
+  background: #1e222d;
+  border: 1px solid #2a2e39;
+  border-radius: 4px;
+  color: #d1d4dc;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.draw-rail-btn:hover .draw-rail-tip {
+  display: flex;
+}
+
+.draw-rail-tip em {
+  color: #787b86;
+  font-size: 11px;
+  font-style: normal;
+}
+
+/* Remaining-clicks badge while a tool is armed. */
+.draw-rail-status {
+  margin-top: 2px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #f0b90b;
+  color: #131722;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* Crosshair over the pane makes it obvious the chart is in drawing mode. */
+.chart-container.drawing {
+  cursor: crosshair;
+}
+
 .replay-controls {
   display: flex;
   align-items: center;
