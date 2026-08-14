@@ -151,6 +151,26 @@ html, body, #root {
   color: #fb8c00;
 }
 
+.status-group {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.status.structure-bullish {
+  color: #26a69a;
+  font-weight: 600;
+}
+
+.status.structure-bearish {
+  color: #ef5350;
+  font-weight: 600;
+}
+
+.status.structure-none {
+  color: #787b86;
+}
+
 .replay-controls {
   display: flex;
   align-items: center;

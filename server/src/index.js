@@ -8,6 +8,7 @@ import { startIngestor } from './services/binanceIngestor.js';
 import { candlesRouter } from './routes/candles.js';
 import { healthRouter } from './routes/health.js';
 import { instrumentsRouter } from './routes/instruments.js';
+import { historyRouter } from './routes/history.js';
 
 async function main() {
   console.log('[server] connecting to MongoDB...');
@@ -20,6 +21,7 @@ async function main() {
   app.use('/api', candlesRouter);
   app.use('/api', healthRouter);
   app.use('/api', instrumentsRouter);
+  app.use('/api', historyRouter);
 
   const httpServer = createServer(app);
   initSocketServer(httpServer, config.corsOrigin);

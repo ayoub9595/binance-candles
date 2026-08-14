@@ -11,9 +11,13 @@ function parseList(raw, fallback) {
   return [...new Set(list)];
 }
 
-const binanceSymbols = parseList(process.env.BINANCE_SYMBOLS, 'BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT').map((s) =>
-  s.toUpperCase()
-);
+// PAXGUSDT (PAX Gold, 1 token = 1 troy oz) is the gold instrument: Binance
+// does not list XAUUSD, since spot gold is a forex/CFD product rather than a
+// crypto pair — the klines endpoint rejects it with HTTP 400.
+const binanceSymbols = parseList(
+  process.env.BINANCE_SYMBOLS,
+  'BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,PAXGUSDT'
+).map((s) => s.toUpperCase());
 const binanceIntervals = parseList(process.env.BINANCE_INTERVALS, '5m,15m,1h,4h');
 
 for (const interval of binanceIntervals) {

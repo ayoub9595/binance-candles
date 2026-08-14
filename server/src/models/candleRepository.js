@@ -55,3 +55,11 @@ export async function getLatestOpenTime({ symbol, interval }) {
   );
   return doc ? doc.openTime : null;
 }
+
+export async function getOldestOpenTime({ symbol, interval }) {
+  const doc = await candlesCollection().findOne(
+    { symbol, interval },
+    { sort: { openTime: 1 }, projection: { openTime: 1 } }
+  );
+  return doc ? doc.openTime : null;
+}

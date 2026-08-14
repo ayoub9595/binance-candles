@@ -49,6 +49,14 @@ export function ReplayControls({ replay, onExit }) {
       </button>
       <button
         type="button"
+        title="Step back one candle"
+        onClick={replay.stepBack}
+        disabled={replay.loading || replay.atStart}
+      >
+        ⏮
+      </button>
+      <button
+        type="button"
         title="Step one candle"
         onClick={replay.stepForward}
         disabled={replay.loading || replay.playing || replay.atEnd}

@@ -14,3 +14,11 @@ export async function getInstruments() {
   const { data } = await client.get('/api/instruments');
   return data;
 }
+
+// Ask the server to backfill this combo from Binance back to `fromMs` if its
+// stored history is too shallow. Can take a while for dates far in the past
+// (the server pages through Binance klines); instant once a range is covered.
+export async function ensureHistory(symbol, interval, fromMs) {
+  const { data } = await client.post('/api/history/ensure', { symbol, interval, fromMs });
+  return data;
+}
