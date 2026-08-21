@@ -1,6 +1,9 @@
 import { fetchKlines } from './binanceRest.js';
+import { fetchForexKlines } from './derivFeed.js';
+import { isForexSymbol } from './forexInstruments.js';
+import { isTradableSymbol } from './spotCatalog.js';
 import { fromRestKline } from '../utils/normalizeCandle.js';
-import { bulkUpsertCandles, getOldestOpenTime } from '../models/candleRepository.js';
+import { bulkUpsertCandles, getOldestOpenTime, getLatestOpenTime } from '../models/candleRepository.js';
 
 // The startup backfill only keeps the most recent BACKFILL_LIMIT candles, so
 // replaying an older day needs the missing history pulled from Binance on
@@ -25,6 +28,17 @@ function pace() {
   return at > now ? new Promise((resolve) => setTimeout(resolve, at - now)) : Promise.resolve();
 }
 
+// Both providers speak the same paging dialect — `endTime` with no start
+// returns the newest `limit` candles at or before that instant — so the walk
+// below only needs one seam: which fetcher turns a page into candle docs.
+async function fetchPage({ symbol, interval, endTime, limit }) {
+  if (isForexSymbol(symbol)) {
+    return fetchForexKlines({ symbol, interval, endTime, limit });
+  }
+  const raw = await fetchKlines({ symbol, interval, endTime, limit });
+  return raw.map((k) => fromRestKline(k, symbol, interval));
+}
+
 async function walkBack({ symbol, interval, fromMs }) {
   // Nothing stored at all (combo added but ingestor not caught up yet):
   // walk back from "now" instead of failing.
@@ -33,11 +47,9 @@ async function walkBack({ symbol, interval, fromMs }) {
 
   while (oldest > fromMs && pages < MAX_PAGES) {
     await pace();
-    // endTime with no startTime returns the newest `limit` candles at or
-    // before that instant — exactly one page further into the past.
-    const raw = await fetchKlines({ symbol, interval, endTime: oldest - 1, limit: 1000 });
-    if (raw.length === 0) break; // ran out of history (before the symbol listed)
-    const candles = raw.map((k) => fromRestKline(k, symbol, interval));
+    // One page further into the past.
+    const candles = await fetchPage({ symbol, interval, endTime: oldest - 1, limit: 1000 });
+    if (candles.length === 0) break; // ran out of history (before the symbol listed)
     await bulkUpsertCandles(candles);
     const pageOldest = candles[0].openTime;
     if (pageOldest >= oldest) break; // no progress — bail rather than spin
@@ -65,6 +77,70 @@ export function ensureHistory({ symbol, interval, fromMs }) {
   inFlight.set(key, run);
   run.finally(() => {
     if (inFlight.get(key) === run) inFlight.delete(key);
+  });
+  return run;
+}
+
+// --- Cold combos -----------------------------------------------------------
+//
+// Only the configured symbols are backfilled at boot, so a pair the user
+// searched for has NOTHING stored for any interval. Several read paths ask for
+// candles without a preceding /history/ensure — trendline overlays and the live
+// HTF bias among them — and would otherwise render empty for on-demand pairs.
+// So a read that finds a genuinely empty combo seeds it once, inline, and
+// retries; every later read hits stored data and this never runs again.
+//
+// "Genuinely empty" is checked against the whole combo rather than the current
+// query, so an ordinary query that legitimately returns nothing (a date before
+// the pair listed, a forward page past the end) cannot trigger a fetch on every
+// call.
+const seeded = new Set();
+const seeding = new Map();
+
+const SEED_LIMIT = 1000;
+
+async function seed({ symbol, interval }) {
+  await pace();
+  // No endTime: both providers return the most recent SEED_LIMIT candles.
+  const candles = await fetchPage({ symbol, interval, limit: SEED_LIMIT });
+  if (candles.length === 0) return 0;
+  await bulkUpsertCandles(candles);
+  console.log(`[history] seeded cold combo ${symbol} ${interval}: ${candles.length} candles`);
+  return candles.length;
+}
+
+// Returns true when candles were written, i.e. the caller should re-run its
+// query. Never throws — a cold pair that Binance rejects just stays empty.
+export async function ensureSeeded({ symbol, interval }) {
+  const key = `${symbol}:${interval}`;
+  if (seeded.has(key)) return false;
+  if (!isTradableSymbol(symbol)) return false;
+
+  const existing = seeding.get(key);
+  if (existing) return existing;
+
+  const run = (async () => {
+    // Re-check under the dedupe: a concurrent request may have seeded it, and
+    // the boot backfill covers the configured pairs already.
+    if (await getLatestOpenTime({ symbol, interval })) {
+      seeded.add(key);
+      return false;
+    }
+    try {
+      const count = await seed({ symbol, interval });
+      // Mark seeded either way: an empty response means Binance has no klines
+      // for this combo, and retrying that on every read is pure waste.
+      seeded.add(key);
+      return count > 0;
+    } catch (err) {
+      console.error(`[history] cold seed FAILED for ${key}`, err.message);
+      return false; // not marked seeded — a transient failure may retry
+    }
+  })();
+
+  seeding.set(key, run);
+  run.finally(() => {
+    if (seeding.get(key) === run) seeding.delete(key);
   });
   return run;
 }

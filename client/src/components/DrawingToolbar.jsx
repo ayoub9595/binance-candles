@@ -44,9 +44,9 @@ const Icon = {
 };
 
 const TOOLS = [
-  { id: null, icon: Icon.cursor, label: 'Cursor', hint: 'Pan and zoom the chart' },
-  { id: 'long', icon: Icon.long, label: 'Long Position', hint: 'Click entry, then target' },
-  { id: 'short', icon: Icon.short, label: 'Short Position', hint: 'Click entry, then target' },
+  { id: null, icon: Icon.cursor, label: 'Cursor', hint: 'Pan, zoom, select and drag drawings' },
+  { id: 'long', icon: Icon.long, label: 'Long Position', hint: 'Click stop, then entry · drag to adjust' },
+  { id: 'short', icon: Icon.short, label: 'Short Position', hint: 'Click stop, then entry · drag to adjust' },
   { id: 'line', icon: Icon.line, label: 'Trend Line', hint: 'Click both endpoints' },
   { id: 'box', icon: Icon.box, label: 'Rectangle', hint: 'Click opposite corners' },
 ];

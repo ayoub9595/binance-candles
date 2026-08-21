@@ -3,8 +3,55 @@ import { createChart, createSeriesMarkers, CandlestickSeries, LineSeries, LineSt
 import { RectanglesPrimitive } from './rectanglesPrimitive.js';
 import { DrawingsPrimitive } from './drawingsPrimitive.js';
 
+// Segment line styles arrive as plain strings so the callers (and the utils
+// feeding them) never have to import the charting library just to describe an
+// overlay. Unknown/absent -> Solid, which is what the original two-point
+// inducement lines used.
+const LINE_STYLE_BY_NAME = {
+  solid: LineStyle.Solid,
+  dotted: LineStyle.Dotted,
+  dashed: LineStyle.Dashed,
+};
+
+// A `segments` item is either the styled multi-point form
+//   { id, points: [{time, value}, ...], color, lineStyle, lineWidth }
+// used by IDM levels and the pivot connector chains, or the legacy horizontal
+// two-point form { id, side, price, fromTime, toTime }. The legacy shape is
+// expanded here so any caller still emitting it keeps rendering unchanged.
+function segmentPoints(seg) {
+  if (seg.points) return seg.points;
+  return [
+    { time: seg.fromTime, value: seg.price },
+    { time: seg.toTime, value: seg.price },
+  ];
+}
+
+// Cheap content hash of a polyline. ChartPage recomputes every overlay on
+// EVERY bar tick, so the points arrays are fresh references each render even
+// when the geometry is byte-identical — comparing by reference would call
+// setData() (a full series rewrite) on every line, every tick. Chains hold at
+// most a handful of points, so joining them is far cheaper than the redraw it
+// avoids.
+function pointsSignature(points) {
+  let sig = '';
+  for (const p of points) sig += `${p.time}:${p.value}|`;
+  return sig;
+}
+
 export const CandlestickChart = forwardRef(function CandlestickChart(
-  { initialData, trendlines, markers, segments, boxes, drawings, selectedDrawingId, onChartClick },
+  {
+    initialData,
+    trendlines,
+    markers,
+    segments,
+    boxes,
+    drawings,
+    selectedDrawingId,
+    onChartClick,
+    onDrawingSelect,
+    onDrawingDrag,
+    toolActive,
+  },
   ref
 ) {
   const containerRef = useRef(null);
@@ -19,6 +66,17 @@ export const CandlestickChart = forwardRef(function CandlestickChart(
   // latest callback — resubscribing per render would thrash the chart.
   const onChartClickRef = useRef(onChartClick);
   onChartClickRef.current = onChartClick;
+  // Same reason as onChartClick: the pointer listeners are bound once at mount
+  // and must still see the latest callbacks and the current tool state.
+  const onDrawingSelectRef = useRef(onDrawingSelect);
+  onDrawingSelectRef.current = onDrawingSelect;
+  const onDrawingDragRef = useRef(onDrawingDrag);
+  onDrawingDragRef.current = onDrawingDrag;
+  const toolActiveRef = useRef(toolActive);
+  toolActiveRef.current = toolActive;
+  // The in-flight drag: { id, part, price, time }, tracking the pointer's last
+  // chart-space position so each move can be sent as a delta.
+  const dragRef = useRef(null);
 
   useEffect(() => {
     const chart = createChart(containerRef.current, {
@@ -73,6 +131,98 @@ export const CandlestickChart = forwardRef(function CandlestickChart(
     };
     chart.subscribeClick(handleClick);
 
+    // --- Direct manipulation of user drawings.
+    //
+    // The chart library owns mouse handling for pan/zoom, so grabbing a drawing
+    // has to win that contest: these listeners are bound in the CAPTURE phase
+    // on the container, which puts them ahead of the library's own handlers,
+    // and disable handleScroll/handleScale for the duration of a drag so the
+    // chart doesn't pan out from under the thing being dragged.
+    //
+    // Only live while no drawing TOOL is armed — with a tool selected, clicks
+    // are placing points, and hijacking them to drag would make a half-placed
+    // drawing impossible to finish.
+    const el = containerRef.current;
+    const atPointer = (ev) => {
+      const rect = el.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const y = ev.clientY - rect.top;
+      return {
+        x,
+        y,
+        price: series.coordinateToPrice(y),
+        // null once the pointer is past the newest bar — callers treat that as
+        // "no time under the cursor" rather than clamping to the last one.
+        time: chart.timeScale().coordinateToTime(x),
+      };
+    };
+
+    const handlePointerDown = (ev) => {
+      if (ev.button !== 0 || toolActiveRef.current) return;
+      const prim = drawingsPrimitiveRef.current;
+      if (!prim) return;
+      const { x, y, price, time } = atPointer(ev);
+      const hit = prim.hitTest(x, y);
+      onDrawingSelectRef.current?.(hit ? hit.id : null);
+      if (!hit || price == null) return;
+
+      chart.applyOptions({ handleScroll: false, handleScale: false });
+      dragRef.current = { ...hit, price, time };
+      el.setPointerCapture?.(ev.pointerId);
+      // Stop the library seeing this press at all, so no pan begins and no
+      // click fires when the button comes back up.
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+
+    const CURSOR_FOR = { body: 'move', right: 'ew-resize', p1: 'grab', p2: 'grab' };
+
+    const handlePointerMove = (ev) => {
+      const drag = dragRef.current;
+      const { x, y, price, time } = atPointer(ev);
+
+      if (!drag) {
+        // Hover feedback: what would this press grab? While a tool is armed the
+        // inline cursor is cleared instead, so the container's crosshair class
+        // shows through rather than a stale 'move' left over from a hover.
+        if (toolActiveRef.current) {
+          el.style.cursor = '';
+          return;
+        }
+        const hit = drawingsPrimitiveRef.current?.hitTest(x, y);
+        el.style.cursor = hit ? (CURSOR_FOR[hit.part] ?? 'ns-resize') : '';
+        return;
+      }
+
+      if (price == null) return;
+      onDrawingDragRef.current?.({
+        id: drag.id,
+        part: drag.part,
+        price,
+        time,
+        dPrice: price - drag.price,
+        dTime: time != null && drag.time != null ? time - drag.time : 0,
+      });
+      drag.price = price;
+      if (time != null) drag.time = time;
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+
+    const endDrag = (ev) => {
+      if (!dragRef.current) return;
+      dragRef.current = null;
+      chart.applyOptions({ handleScroll: true, handleScale: true });
+      el.releasePointerCapture?.(ev.pointerId);
+    };
+
+    el.addEventListener('pointerdown', handlePointerDown, true);
+    el.addEventListener('pointermove', handlePointerMove, true);
+    el.addEventListener('pointerup', endDrag, true);
+    // A cancelled pointer (window blur, touch interruption) must still restore
+    // panning, or the chart silently stops responding to drags.
+    el.addEventListener('pointercancel', endDrag, true);
+
     series.setData(initialData || []);
     if (initialData?.length) {
       // Deliberately NOT fitContent(): that recomputes barSpacing to squeeze
@@ -85,6 +235,10 @@ export const CandlestickChart = forwardRef(function CandlestickChart(
 
     return () => {
       chart.unsubscribeClick(handleClick);
+      el.removeEventListener('pointerdown', handlePointerDown, true);
+      el.removeEventListener('pointermove', handlePointerMove, true);
+      el.removeEventListener('pointerup', endDrag, true);
+      el.removeEventListener('pointercancel', endDrag, true);
       chart.remove();
       chartInstanceRef.current = null;
       markersApiRef.current = null;
@@ -195,10 +349,23 @@ export const CandlestickChart = forwardRef(function CandlestickChart(
     drawingsPrimitiveRef.current?.setDrawings(drawings || [], selectedDrawingId ?? null);
   }, [drawings, selectedDrawingId]);
 
-  // Horizontal inducement level lines, one short 2-point LineSeries per
-  // level: a solid bar from the swing that built the level to the candle that
-  // consumed it. Reconciled by level id so an update only touches the lines
-  // whose geometry actually changed.
+  // Overlay polylines — one LineSeries per segment. Two kinds share this pool:
+  // horizontal IDM level lines (an order block's inducement, top bar -> break
+  // bar, or top bar -> last bar while the break is pending) and the sloped
+  // pivot connector chains that link consecutive swing highs/lows within a
+  // structure leg. Both are just "a styled list of points", so they reconcile
+  // through the same id-keyed pass.
+  //
+  // Two independent things are diffed per series, because they change on
+  // different schedules: GEOMETRY (the points, which grow/extend as bars
+  // arrive) and STYLE (color/lineStyle/lineWidth, which for a given id only
+  // ever changes when a pending inducement is broken and its dotted faded
+  // line turns solid full-strength; connectors never restyle at all, so the
+  // check is what keeps the other ~50 series untouched every tick).
+  // Each is only pushed to the library when it actually differs — setData() and
+  // applyOptions() both trigger a redraw, and this effect runs on every tick.
+  // autoscaleInfoProvider keeps these overlays out of the price-axis fit, so a
+  // stale far-away level can never stretch the candle scale.
   useEffect(() => {
     const { chart } = chartInstanceRef.current || {};
     if (!chart) return;
@@ -214,33 +381,44 @@ export const CandlestickChart = forwardRef(function CandlestickChart(
     }
 
     for (const [id, seg] of want) {
+      const points = segmentPoints(seg);
+      // Defaults reproduce the pre-styling behaviour for callers that only
+      // send the legacy shape: solid 2px, red above / teal below.
+      const color = seg.color ?? (seg.side === 'high' ? '#ef5350' : '#26a69a');
+      const lineWidth = seg.lineWidth ?? 2;
+      const lineStyle = LINE_STYLE_BY_NAME[seg.lineStyle] ?? LineStyle.Solid;
+
       let entry = have.get(id);
       if (!entry) {
         entry = {
           series: chart.addSeries(LineSeries, {
-            color: seg.side === 'high' ? '#ef5350' : '#26a69a',
-            lineWidth: 2,
-            lineStyle: LineStyle.Solid,
+            color,
+            lineWidth,
+            lineStyle,
             priceLineVisible: false,
             lastValueVisible: false,
             crosshairMarkerVisible: false,
             autoscaleInfoProvider: () => null,
           }),
-          price: NaN,
-          fromTime: NaN,
-          toTime: NaN,
+          // null (not '') so a segment whose points list is legitimately empty
+          // still gets its one setData() and clears the series.
+          sig: null,
+          color,
+          lineWidth,
+          lineStyle,
         };
         have.set(id, entry);
+      } else if (entry.color !== color || entry.lineWidth !== lineWidth || entry.lineStyle !== lineStyle) {
+        entry.series.applyOptions({ color, lineWidth, lineStyle });
+        entry.color = color;
+        entry.lineWidth = lineWidth;
+        entry.lineStyle = lineStyle;
       }
 
-      if (entry.price !== seg.price || entry.fromTime !== seg.fromTime || entry.toTime !== seg.toTime) {
-        entry.series.setData([
-          { time: seg.fromTime, value: seg.price },
-          { time: seg.toTime, value: seg.price },
-        ]);
-        entry.price = seg.price;
-        entry.fromTime = seg.fromTime;
-        entry.toTime = seg.toTime;
+      const sig = pointsSignature(points);
+      if (entry.sig !== sig) {
+        entry.series.setData(points);
+        entry.sig = sig;
       }
     }
   }, [segments]);

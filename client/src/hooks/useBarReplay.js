@@ -8,6 +8,16 @@ import { toChartBar } from '../utils/normalizeCandle.js';
 const CONTEXT_LIMIT = 500;
 const FORWARD_LIMIT = 5000;
 
+// Re-exported because a session's forward span is what any overlay fetching
+// its OWN data for the replay window has to size against — useHtfBias derives
+// how many 1h/4h candles a session can possibly play through from this.
+export const REPLAY_FORWARD_LIMIT = FORWARD_LIMIT;
+
+// How close the cursor gets to the end of the loaded window before the next
+// page is requested. Wide enough that a 10x playback (10 bars/sec) has ~5
+// seconds of runway while the page is in flight.
+const REFILL_MARGIN = 50;
+
 // Playback speeds in candles per second.
 export const REPLAY_SPEEDS = [1, 2, 5, 10];
 
@@ -46,6 +56,17 @@ async function fetchReplayRange(symbol, interval, startMs) {
   };
 }
 
+// One more page of forward candles, starting strictly after `fromMs`. Used to
+// grow a session past its initial window; `capped` reports whether THIS page
+// was truncated too, i.e. whether there is likely yet more beyond it.
+async function fetchForwardPage(symbol, interval, fromMs) {
+  const rows = await getCandles(symbol, interval, FORWARD_LIMIT, { startTime: fromMs });
+  return {
+    bars: rows.filter((c) => c.isClosed !== false).map(toChartBar),
+    capped: rows.length >= FORWARD_LIMIT,
+  };
+}
+
 // How many leading candles of `arr` have CLOSED by cursorSec. A candle's
 // close is taken to be its successor's open, so revealing by close never
 // leaks a still-forming candle's final OHLC into the replay (and data gaps
@@ -74,6 +95,11 @@ export function useBarReplay({ symbol, interval, enabledTrendlines, onMainBar, o
   const [contextBars, setContextBars] = useState(null);
   const [trendlineCandles, setTrendlineCandles] = useState({});
   const [sessionId, setSessionId] = useState(0);
+  // The session's anchor date mirrored into state. dataRef.current.startMs
+  // already holds it, but a ref mutation doesn't re-render, so a caller that
+  // has to re-fetch its own window around the session start (the HTF bias
+  // panel) could never observe it. 0 means "no session".
+  const [sessionStartMs, setSessionStartMs] = useState(0);
 
   // main: forward bars for the chart interval; byInterval/pointers: full
   // candle arrays and how far into them the cursor has advanced, per
@@ -86,6 +112,9 @@ export function useBarReplay({ symbol, interval, enabledTrendlines, onMainBar, o
     startMs: 0,
     startSec: 0,
     intervalSec: 60,
+    // The forward page came back FULL, so the session ends where the request
+    // stopped rather than where history did — the case worth paging past.
+    forwardCapped: false,
   });
   const dataRef = useRef(emptyData());
   const cursorRef = useRef(-1);
@@ -129,6 +158,7 @@ export function useBarReplay({ symbol, interval, enabledTrendlines, onMainBar, o
     setWindowCapped(false);
     setContextBars(null);
     setTrendlineCandles({});
+    setSessionStartMs(0);
     // Lets the owner reset its own state (e.g. null stale live history) in
     // the same batch, whichever path exited — button, error, symbol switch.
     onExitRef.current?.();
@@ -152,6 +182,7 @@ export function useBarReplay({ symbol, interval, enabledTrendlines, onMainBar, o
       setWindowCapped(false);
       setContextBars(null);
       setTrendlineCandles({});
+      setSessionStartMs(startMs);
       setSessionId((s) => s + 1);
 
       try {
@@ -184,6 +215,7 @@ export function useBarReplay({ symbol, interval, enabledTrendlines, onMainBar, o
           data.pointers.set(i, p);
           initialTrendlines[i] = combined.slice(0, p);
         }
+        data.forwardCapped = main.forwardCapped;
         setContextBars(mainContext);
         setTrendlineCandles(initialTrendlines);
         setTotal(main.forward.length);
@@ -199,11 +231,75 @@ export function useBarReplay({ symbol, interval, enabledTrendlines, onMainBar, o
     [symbol, interval, exit]
   );
 
+  // Page the session forward. A window that came back FULL ended because the
+  // request stopped, not because history did — ensureHistory() has already
+  // walked the store contiguous from the anchor to now, so the candles past
+  // the window exist and just need asking for. Fired as the cursor approaches
+  // the end rather than on arrival, so a session played at 10x rolls straight
+  // through the seam instead of stalling on it.
+  const extendingRef = useRef(false);
+  const [extending, setExtending] = useState(false);
+
+  const maybeExtend = useCallback(() => {
+    const data = dataRef.current;
+    if (extendingRef.current || !data.forwardCapped) return;
+    if (cursorRef.current < data.main.length - REFILL_MARGIN) return;
+
+    const token = sessionTokenRef.current;
+    extendingRef.current = true;
+    setExtending(true);
+    // Resume strictly after the last loaded bar OPENS; the server returns
+    // candles at or after startTime, so +1ms is what excludes the duplicate.
+    const fromMs = (data.main[data.main.length - 1].time + 1) * 1000;
+    const intervals = [...data.byInterval.keys()];
+
+    Promise.all([
+      fetchForwardPage(symbol, interval, fromMs),
+      ...intervals.map((i) => fetchForwardPage(symbol, i, fromMs).then((r) => [i, r])),
+    ])
+      .then(([mainPage, ...trendlinePages]) => {
+        if (token !== sessionTokenRef.current) return; // session ended mid-fetch
+        const live = dataRef.current;
+        live.forwardCapped = mainPage.capped;
+        if (mainPage.bars.length) {
+          live.main = live.main.concat(mainPage.bars);
+          setTotal(live.main.length);
+        }
+        // No new bars AND the page wasn't capped means we have genuinely
+        // caught up with stored history; stop asking.
+        setWindowCapped(mainPage.capped);
+
+        for (const [i, page] of trendlinePages) {
+          const arr = live.byInterval.get(i);
+          if (!arr || !page.bars.length) continue;
+          live.byInterval.set(i, arr.concat(page.bars));
+        }
+      })
+      .catch((err) => {
+        if (token === sessionTokenRef.current) {
+          console.error('failed to extend the replay window', err);
+          // Stop auto-retrying against a failing server. windowCapped stays
+          // TRUE on purpose: the session really did stop at the window edge,
+          // and reporting "end of data" here would blame the data for a fetch
+          // that failed.
+          dataRef.current.forwardCapped = false;
+        }
+      })
+      .finally(() => {
+        if (token !== sessionTokenRef.current) return;
+        extendingRef.current = false;
+        setExtending(false);
+      });
+  }, [symbol, interval]);
+
   const stepForward = useCallback(() => {
     const data = dataRef.current;
     const next = cursorRef.current + 1;
     if (next >= data.main.length) {
-      setPlaying(false);
+      // Hold position rather than stopping the transport while a page is in
+      // flight, so playback picks up by itself the moment it lands.
+      if (!extendingRef.current) setPlaying(false);
+      maybeExtend();
       return;
     }
     cursorRef.current = next;
@@ -229,24 +325,72 @@ export function useBarReplay({ symbol, interval, enabledTrendlines, onMainBar, o
     if (changed) {
       setTrendlineCandles((prev) => ({ ...prev, ...changed }));
     }
-  }, []);
+    maybeExtend();
+  }, [maybeExtend]);
 
-  // Step one candle back. Unlike stepForward this cannot be incremental: the
-  // main series has to shrink (the chart's setCandles replaces the whole array)
-  // and every trendline pointer has to be recomputed from zero, since
-  // closedCount only ever scans forward from a previous count. Cursor -1 is a
-  // valid destination — the session sits at its start with only context shown.
-  const stepBack = useCallback(() => {
+  // Fast-forward to a forward-bar index, revealing every bar in between. This
+  // is exactly N stepForward()s — same bars, same order, same trendline pointer
+  // arithmetic — with the per-bar cursor/trendline state updates collapsed into
+  // one, so a several-hundred-bar skip doesn't cost several hundred renders.
+  // It cannot reveal anything a manual walk wouldn't, which is what lets the
+  // caller search ahead for a setup and land on it honestly.
+  const jumpTo = useCallback((targetIndex) => {
     const data = dataRef.current;
-    const prev = cursorRef.current - 1;
-    if (cursorRef.current < 0) return;
-    cursorRef.current = prev;
-    setCursor(prev);
+    const target = Math.min(targetIndex, data.main.length - 1);
+    if (target <= cursorRef.current) return;
+
+    for (let n = cursorRef.current + 1; n <= target; n++) {
+      onMainBarRef.current?.(data.main[n]);
+    }
+    cursorRef.current = target;
+    setCursor(target);
+    // A skip is a deliberate stop at something; running on from there would
+    // scroll the thing you skipped to straight back off the chart.
+    setPlaying(false);
+
+    const cursorSec = data.main[target].time + data.intervalSec;
+    let changed = null;
+    for (const [i, arr] of data.byInterval) {
+      const before = data.pointers.get(i);
+      const p = closedCount(arr, cursorSec, before);
+      if (p !== before) {
+        data.pointers.set(i, p);
+        (changed ??= {})[i] = arr.slice(0, p);
+      }
+    }
+    if (changed) {
+      setTrendlineCandles((prev) => ({ ...prev, ...changed }));
+    }
+    maybeExtend();
+  }, [maybeExtend]);
+
+  // The session's full forward-bar array, for callers that need to search ahead
+  // of the cursor (the skip-to-setup scan). Deliberately a getter and not
+  // state: these bars are NOT revealed, nothing should re-render when they
+  // change, and reading them during render would invite exactly the lookahead
+  // the rest of this file is built to prevent. Call it from an event handler.
+  const getForwardBars = useCallback(() => dataRef.current.main, []);
+
+  // Rewind to an earlier forward-bar index. Unlike jumpTo this cannot be
+  // incremental: the main series has to shrink (the chart's setCandles
+  // replaces the whole array) and every trendline pointer has to be recomputed
+  // from zero, since closedCount only ever scans forward from a previous
+  // count. Cursor -1 is a valid destination — the session sits at its start
+  // with only context shown. Backwards mirror of jumpTo: the caller searches
+  // behind the cursor for a setup and lands on it, and because everything the
+  // rewind reveals was already revealed once, it cannot show anything a
+  // manual walk back would not.
+  const jumpBackTo = useCallback((targetIndex) => {
+    const data = dataRef.current;
+    const target = Math.max(targetIndex, -1);
+    if (cursorRef.current < 0 || target >= cursorRef.current) return;
+    cursorRef.current = target;
+    setCursor(target);
     setPlaying(false);
 
     // Rewind the trendline overlays to the new cursor time. At cursor -1 that
     // is the session's start time, matching what start() seeded them with.
-    const cursorSec = prev >= 0 ? data.main[prev].time + data.intervalSec : data.startSec;
+    const cursorSec = target >= 0 ? data.main[target].time + data.intervalSec : data.startSec;
     const rewound = {};
     for (const [i, arr] of data.byInterval) {
       const p = closedCount(arr, cursorSec);
@@ -257,8 +401,11 @@ export function useBarReplay({ symbol, interval, enabledTrendlines, onMainBar, o
 
     // Hand the owner the full truncated bar list so it can rewrite the chart
     // series and re-seed its SMC mirror from the same source of truth.
-    onRewindRef.current?.(data.main.slice(0, prev + 1));
+    onRewindRef.current?.(data.main.slice(0, target + 1));
   }, []);
+
+  // Step one candle back — the single-bar case of the same rewind.
+  const stepBack = useCallback(() => jumpBackTo(cursorRef.current - 1), [jumpBackTo]);
 
   // Playback clock.
   useEffect(() => {
@@ -386,17 +533,24 @@ export function useBarReplay({ symbol, interval, enabledTrendlines, onMainBar, o
     cursor,
     total,
     windowCapped,
-    atEnd: active && total > 0 && cursor >= total - 1,
+    extending,
+    // Only truly at the end when nothing more is coming: mid-extension the
+    // cursor sits on the last loaded bar, which is a pause, not an ending.
+    atEnd: active && total > 0 && cursor >= total - 1 && !extending,
     atStart: active && cursor < 0,
     contextBars,
     trendlineCandles,
     sessionId,
+    startMs: sessionStartMs,
     start,
     exit,
     play,
     pause,
     stepForward,
     stepBack,
+    jumpTo,
+    jumpBackTo,
+    getForwardBars,
     setSpeed,
   };
 }

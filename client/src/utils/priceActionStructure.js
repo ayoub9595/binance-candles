@@ -26,6 +26,13 @@
 // The engine is a per-bar stepper so detectors can fold it into their own
 // single pass. Feeding a growing prefix of candles replays identically —
 // everything is causal (pivots confirm `rightLength` bars late).
+//
+// One addition on top of the library: step() also reports the pivots that
+// confirmed on the bar just stepped. The library keeps only the 6 most recent
+// pivots because that is all its own break logic ever consults, which makes
+// the internal array useless as a history; reporting confirmations as they
+// happen lets a caller (pivotConnectors.js) accumulate the complete pivot
+// sequence without touching the engine's pruning rules.
 
 function isPivotHigh(candles, i, left, right) {
   const h = candles[i].high;
@@ -43,10 +50,18 @@ function isPivotLow(candles, i, left, right) {
   return true;
 }
 
-// Returns a tracker with step(candles, j) → { events, trend, breakOccurred }.
+// Returns a tracker with step(candles, j) → { events, trend, breakOccurred,
+// pivots }.
 // events: [{ type: 'BOS'|'CHoCH'|'CHoCH+', dir: 'bullish'|'bearish', price,
 //            fromTime, time }] — at most one CHoCH-type and one BOS per bar.
 // trend: -1 | 0 | 1 after this bar. Call step() once per bar, in order.
+// pivots: the pivots that CONFIRMED on this bar, [{ price, barIndex, type, time }]
+//         with type 1 = high, -1 = low. This is a per-bar report, not a view of
+//         the internal array, so it is deliberately NOT subject to the
+//         library's 6-entry cap — callers that need the full pivot history
+//         (e.g. the connector chains) accumulate it themselves. Usually empty
+//         or one entry; both can land on the same bar when one candle both
+//         out-highs and out-lows its whole window.
 export function createStructureTracker({ leftLength = 5, rightLength = 5 } = {}) {
   let pivots = []; // newest first: { price, barIndex, type, time, bosBroken, chochBroken }
   let bosHistory = []; // { barIndex, price, deleted } — broken pivots this trend
@@ -92,15 +107,23 @@ export function createStructureTracker({ leftLength = 5, rightLength = 5 } = {})
     const bar = candles[j];
 
     // 1. Pivot(): confirm the candidate rightLength bars back.
+    //    `confirmed` mirrors that into a plain per-bar report. It is built
+    //    from copies rather than aliasing the records the engine mutates
+    //    (bosBroken/chochBroken flip later in this same step, and the cap
+    //    below evicts records entirely), so a caller holding onto the report
+    //    can never observe the engine's internal state drifting under it.
+    const confirmed = [];
     const i = j - rightLength;
     if (i >= leftLength) {
       if (isPivotHigh(candles, i, leftLength, rightLength)) {
         if (pivots.length > 5) pivots.pop();
         pivots.unshift({ price: candles[i].high, barIndex: i, type: 1, time: candles[i].time, bosBroken: false, chochBroken: false });
+        confirmed.push({ price: candles[i].high, barIndex: i, type: 1, time: candles[i].time });
       }
       if (isPivotLow(candles, i, leftLength, rightLength)) {
         if (pivots.length > 5) pivots.pop();
         pivots.unshift({ price: candles[i].low, barIndex: i, type: -1, time: candles[i].time, bosBroken: false, chochBroken: false });
+        confirmed.push({ price: candles[i].low, barIndex: i, type: -1, time: candles[i].time });
       }
     }
 
@@ -157,7 +180,7 @@ export function createStructureTracker({ leftLength = 5, rightLength = 5 } = {})
       break;
     }
 
-    return { events, trend, breakOccurred: chochFired || bosFired };
+    return { events, trend, breakOccurred: chochFired || bosFired, pivots: confirmed };
   }
 
   return {

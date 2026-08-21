@@ -21,6 +21,10 @@ pnpm-debug.log*
 # Test coverage
 coverage/
 
+# Python
+__pycache__/
+python-orderblocks/alerts.jsonl
+
 # Vite cache
 .vite/
 

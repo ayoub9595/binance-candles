@@ -34,8 +34,11 @@ function upperWick(bar) {
 
 // candles: ascending toChartBar array ({time: sec, open, high, low, close}).
 // Returns { boxes: [{ id, dir: 'bullish'|'bearish', top, bottom, fromTime,
-//                     toTime, mitigated }] } — fromTime is the origin candle;
-// toTime is the mitigation bar for tapped zones, the last bar for fresh ones.
+//                     detectedTime, toTime, mitigated }] } — fromTime is the
+// origin candle; detectedTime is the gap's third candle, i.e. the bar on which
+// the zone first became KNOWN (two bars after its origin), which is what a
+// replay has to key off to answer "has this zone printed yet?"; toTime is the
+// mitigation bar for tapped zones, the last bar for fresh ones.
 export function computeFvgOrderBlocks(candles) {
   const done = [];
   const active = [];
@@ -70,6 +73,7 @@ export function computeFvgOrderBlocks(candles) {
           top: first.high,
           bottom: first.low,
           fromTime: first.time,
+          detectedTime: bar.time,
         });
       }
     } else if (bar.high < first.low) {
@@ -85,6 +89,7 @@ export function computeFvgOrderBlocks(candles) {
           top: first.high,
           bottom: first.low,
           fromTime: first.time,
+          detectedTime: bar.time,
         });
       }
     }

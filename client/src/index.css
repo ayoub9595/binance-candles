@@ -64,6 +64,110 @@ html, body, #root {
   font-size: 13px;
 }
 
+/* --- Symbol search (combobox over every Binance spot pair) --- */
+
+.symbol-search {
+  position: relative;
+}
+
+.symbol-search-input {
+  background: #1e222d;
+  color: #d1d4dc;
+  border: 1px solid #2a2e39;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  width: 150px;
+  font-family: inherit;
+}
+
+.symbol-search-input:hover {
+  border-color: #26a69a;
+}
+
+.symbol-search-input:focus {
+  outline: none;
+  border-color: #26a69a;
+  font-weight: 400;
+}
+
+/* Closed, the field's VALUE is the current symbol (bold, above); the
+   placeholder only ever shows the "Search pairs…" prompt while open, so it
+   reads as a hint rather than as the selection. */
+.symbol-search-input::placeholder {
+  color: #787b86;
+  font-weight: 400;
+}
+
+/* Floats over the chart rather than pushing the header around. */
+.symbol-search-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  width: 260px;
+  background: #161a25;
+  border: 1px solid #2a2e39;
+  border-radius: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.symbol-search-heading {
+  padding: 8px 10px 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #787b86;
+}
+
+.symbol-search-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 288px;
+  overflow-y: auto;
+}
+
+.symbol-search-option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 3px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* Hover and keyboard focus are the same highlight — the mouse moves the
+   keyboard cursor (onMouseEnter), so there is only ever one active row. */
+.symbol-search-option.active {
+  background: #1e222d;
+}
+
+.symbol-search-option.current .symbol-search-symbol {
+  color: #26a69a;
+}
+
+.symbol-search-symbol {
+  font-weight: 600;
+}
+
+.symbol-search-assets {
+  color: #787b86;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.symbol-search-status {
+  padding: 10px;
+  font-size: 12px;
+  color: #787b86;
+}
+
 .interval-toggle {
   display: flex;
   gap: 4px;
@@ -88,6 +192,136 @@ html, body, #root {
   border-color: #26a69a;
   color: #0d0f14;
   font-weight: 600;
+}
+
+/* --- 24h movers strip (between the header and the chart) --- */
+
+.movers-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 16px;
+  border-bottom: 1px solid #1e222d;
+  background: #0f1218;
+  font-size: 12px;
+  /* The chart takes the remaining height, so this strip must never grow with
+     its content — a long list scrolls inside .movers-list instead. */
+  flex: 0 0 auto;
+  min-height: 32px;
+}
+
+.movers-toggle,
+.movers-side {
+  background: none;
+  border: none;
+  color: #787b86;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  padding: 3px 4px;
+  white-space: nowrap;
+}
+
+.movers-toggle:hover,
+.movers-side:hover {
+  color: #d1d4dc;
+}
+
+.movers-caret {
+  display: inline-block;
+  width: 9px;
+  color: #4a4e5a;
+}
+
+.movers-sides {
+  display: flex;
+  gap: 2px;
+  padding-left: 2px;
+  border-left: 1px solid #1e222d;
+}
+
+.movers-side.active.gainers {
+  color: #26a69a;
+}
+
+.movers-side.active.losers {
+  color: #ef5350;
+}
+
+/* Twelve movers overflow a narrow window; scroll the list rather than wrap it
+   onto a second line, which would push the chart down. */
+.movers-list {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.movers-list::-webkit-scrollbar {
+  height: 4px;
+}
+
+.movers-list::-webkit-scrollbar-thumb {
+  background: #2a2e39;
+  border-radius: 2px;
+}
+
+.mover {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  flex: 0 0 auto;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 3px 7px;
+  font-family: inherit;
+  font-size: 12px;
+  color: #d1d4dc;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mover:hover {
+  background: #1e222d;
+  border-color: #2a2e39;
+}
+
+/* The pair already on the chart — a marker, not a hover state, so it reads
+   even while the pointer is elsewhere on the bar. */
+.mover.current {
+  border-color: #26a69a;
+  background: #161a25;
+}
+
+.mover-asset {
+  font-weight: 600;
+}
+
+.mover.up .mover-change {
+  color: #26a69a;
+}
+
+.mover.down .mover-change {
+  color: #ef5350;
+}
+
+.movers-status {
+  color: #787b86;
+  font-size: 12px;
+}
+
+.movers-stamp {
+  color: #4a4e5a;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: help;
 }
 
 .app-status {
@@ -145,6 +379,20 @@ html, body, #root {
   border-color: var(--chip-color);
   color: #0d0f14;
   font-weight: 600;
+}
+
+/* "On, but currently suppressed" — the feature is enabled while a gate (HTF
+   alignment for OB) is withholding its output. Reads as an outline of the
+   active chip rather than a new color: dashed says "conditional", the dimming
+   says "nothing on the chart right now". Must follow .active to win the
+   equal-specificity tie, since a gated chip is always also active. */
+.trendline-chip.gated {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--chip-color);
+  color: var(--chip-color);
+  font-weight: 400;
+  opacity: 0.65;
 }
 
 .status.replaying {
@@ -374,6 +622,196 @@ html, body, #root {
   color: #787b86;
   font-size: 12px;
   white-space: nowrap;
+}
+
+/* Skip outcome, inline after the bar counter — brighter than the counter it
+   trails so "nothing found" reads as an answer rather than more chrome. */
+.replay-note {
+  color: #f0b90b;
+}
+
+/* --- Position tool inputs. Floats over the chart's top-right, clear of the
+   drawing rail on the left and of the price axis it would otherwise cover. */
+.pos-settings {
+  position: absolute;
+  top: 10px;
+  right: 70px;
+  z-index: 6;
+  width: 260px;
+  padding: 10px;
+  border: 1px solid #2a2e39;
+  border-radius: 6px;
+  background: rgba(19, 23, 34, 0.96);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  color: #d1d4dc;
+}
+
+.pos-settings-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.pos-dir {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.pos-dir.long {
+  color: #26a69a;
+}
+
+.pos-dir.short {
+  color: #ef5350;
+}
+
+.pos-rr {
+  color: #f0b90b;
+  font-weight: 600;
+}
+
+.pos-close {
+  margin-left: auto;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: #787b86;
+  cursor: pointer;
+}
+
+.pos-close:hover {
+  color: #d1d4dc;
+}
+
+.pos-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.pos-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pos-field span {
+  color: #787b86;
+  font-size: 10px;
+}
+
+.pos-field input {
+  width: 100%;
+  padding: 3px 5px;
+  border: 1px solid #2a2e39;
+  border-radius: 3px;
+  background: #1e222d;
+  color: #d1d4dc;
+  font-size: 12px;
+}
+
+.pos-sep {
+  height: 1px;
+  margin: 8px 0;
+  background: #2a2e39;
+}
+
+.pos-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 10px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #2a2e39;
+}
+
+.pos-stats div {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.pos-stats span {
+  color: #787b86;
+}
+
+.pos-stats b {
+  font-weight: 500;
+}
+
+.pos-stats b.up {
+  color: #26a69a;
+}
+
+.pos-stats b.down {
+  color: #ef5350;
+}
+
+.pos-stats em {
+  color: #787b86;
+  font-style: normal;
+  font-size: 10px;
+}
+
+.pos-warn {
+  margin-top: 8px;
+  padding: 5px 6px;
+  border-radius: 3px;
+  background: rgba(240, 185, 11, 0.12);
+  color: #f0b90b;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.pos-warn span {
+  color: #9aa0aa;
+}
+
+.pos-toggles {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: #9aa0aa;
+}
+
+.pos-toggles label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.pos-delete {
+  margin-left: auto;
+  padding: 3px 8px;
+  border: 1px solid rgba(239, 83, 80, 0.5);
+  border-radius: 3px;
+  background: transparent;
+  color: #ef5350;
+  cursor: pointer;
+}
+
+.pos-delete:hover {
+  background: rgba(239, 83, 80, 0.12);
+}
+
+/* The two setup-skips carry the candle colors of the side they hunt, which is
+   the only thing distinguishing them at a glance. Disabled keeps the shape but
+   drops the hue, so "HTF is off" doesn't look like a third state. */
+.replay-skip.bull {
+  color: #26a69a;
+}
+
+.replay-skip.bear {
+  color: #ef5350;
+}
+
+.replay-skip:disabled {
+  color: inherit;
 }
 
 .replay-error {
