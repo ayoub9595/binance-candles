@@ -362,9 +362,9 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
   // there is identical to having walked it by hand.
   //
   // Not lookahead: the scan reads bars the cursor has not reached, but every
-  // test it applies is causal. An order block is created by its own three
-  // candles and the two before them, so a full-range run identifies the same
-  // zones, on the same bars, that a prefix run at each candidate would — this
+  // test it applies is causal. An order block is decided entirely by its gap
+  // and the candles BEHIND it, so a full-range run identifies the same zones,
+  // on the same bars, that a prefix run at each candidate would — this
   // is the prefix-stability the detectors are built for, used to answer the
   // question once instead of once per candidate. The bias likewise comes from
   // biasAt(), which only counts HTF candles closed by that bar.
@@ -483,10 +483,13 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
           ? 'Skip to the next supply order block printed while 4h+1h are aligned bearish'
           : 'Skip to the next supply order block (turn on HTF to require 4h+1h aligned bearish)';
 
-  // --- Order blocks: FVG-anchored. The candle before each gap's
-  // displacement candle is the origin zone (demand under bullish gaps,
-  // supply over bearish ones). Fresh zones extend right; mitigated ones
-  // freeze dimmed at their first tap. Caps bound rendering work only.
+  // --- Order blocks: FVG-anchored. Each gap resolves to at most one zone by
+  // walking back from the candle before its displacement candle — past any
+  // candle that swallowed that one whole while still leaving the imbalance
+  // intact, and dropped entirely if the origin never dug past the candle
+  // behind it (see orderBlocks.js). Demand under bullish gaps, supply over
+  // bearish ones. Fresh zones extend right; mitigated ones freeze dimmed at
+  // their first tap. Caps bound rendering work only.
   const obData = useMemo(() => {
     // Two consumers: the OB boxes overlay, and the IDM overlay — which draws
     // each zone's inducement line even when the boxes themselves are off.
@@ -597,8 +600,10 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
     // summit/window rules. Zones still waiting on their break are hidden, not
     // faded: pending and failed are indistinguishable until the future
     // arrives, and the filter's promise is "everything drawn has already done
-    // it". 'off' is the unfiltered tier — truthy, so nothing is dropped when
-    // the filter is off.
+    // it". Zones computeObTopBreaks returned no verdict for — no top behind
+    // them anywhere in the loaded window — are hidden by the same rule.
+    // 'off' is the unfiltered tier — truthy, so nothing is dropped when the
+    // filter is off.
     // Gate on the CHIP, not on the verdicts existing — the IDM overlay also
     // computes obTopBreaks now, and boxes must not get silently filtered just
     // because the lines are on.
@@ -653,7 +658,7 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
   // answer "where did my order blocks go?", so it reports the live count and
   // which filter is responsible rather than restating what an order block is.
   const obChipTitle = useMemo(() => {
-    const base = "Order blocks: the candle before each fair value gap's displacement candle.";
+    const base = "Order blocks: the candle a fair value gap launched from — the candle before the gap's displacement candle, or the candle that swallowed it whole while leaving the gap intact.";
     if (!obEnabled) return `${base} Click to show them.`;
     if (!obAllowedDir) {
       return htf.loading
@@ -872,7 +877,7 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
             </button>
             <button
               type="button"
-              title="Keep only order blocks whose move broke their summit — for a demand zone, the swing high its decline fell from (the top that gave the bottom); for a supply zone, the swing low its rally rose from. The break must land no later than the bar that first trades back into the zone; zones still waiting on it stay hidden. This filter is strict, so the OB chip dims when it leaves nothing."
+              title="Keep only order blocks whose move broke their summit — for a demand zone, the nearest high above it that its decline fell from; for a supply zone, the nearest low below it that its rally rose from. The break must land no later than the bar that first trades back into the zone; zones still waiting on it stay hidden. This filter is strict, so the OB chip dims when it leaves nothing."
               className={`trendline-chip ${idmObEnabled ? 'active' : ''}`}
               style={{ '--chip-color': '#ab47bc' }}
               onClick={() => setIdmObEnabled((v) => !v)}
