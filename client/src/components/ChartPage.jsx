@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getCandles, ensureHistory } from '../services/api.js';
+import { getCandles, ensureHistory, repairHistory } from '../services/api.js';
 import { useCandleSocket } from '../hooks/useCandleSocket.js';
 import { toChartBar } from '../utils/normalizeCandle.js';
 import { computeSwingTrendline } from '../utils/swingTrendline.js';
@@ -8,10 +8,15 @@ import { computePivotConnectors } from '../utils/pivotConnectors.js';
 import { computeMarketStructure } from '../utils/marketStructure.js';
 import { computeFvgOrderBlocks } from '../utils/orderBlocks.js';
 import { computeFvgs } from '../utils/fvg.js';
+import { computeObRetestPatterns } from '../utils/obRetestPatterns.js';
+import { computeOprRanges } from '../utils/opr.js';
+import { computeRsi, RSI_PERIOD } from '../utils/rsi.js';
 import { useBarReplay, intervalToSec, REPLAY_FORWARD_LIMIT } from '../hooks/useBarReplay.js';
 import { useHtfBias } from '../hooks/useHtfBias.js';
 import { useDrawingTools } from '../hooks/useDrawingTools.js';
 import { DrawingToolbar } from './DrawingToolbar.jsx';
+import { OptionsMenu } from './OptionsMenu.jsx';
+import { WorkspaceSwitcher } from './WorkspaceSwitcher.jsx';
 import { PositionSettings } from './PositionSettings.jsx';
 import { CandlestickChart } from './CandlestickChart.jsx';
 import { SymbolIntervalSelector } from './SymbolIntervalSelector.jsx';
@@ -19,9 +24,28 @@ import { MoversBar } from './MoversBar.jsx';
 import { TrendlineToggles } from './TrendlineToggles.jsx';
 import { ReplayControls } from './ReplayControls.jsx';
 
-const TRENDLINE_PALETTE = ['#ab47bc', '#fb8c00', '#42a5f5', '#66bb6a', '#ec407a'];
+const TRENDLINE_PALETTE = ['#ab47bc', '#fb8c00', '#42a5f5', '#66bb6a', '#ec407a', '#26c6da', '#ffca28'];
 
-// Candles loaded for the live chart (~15.6 days of 15m, ~5.2 days of 5m).
+// The OPRSTRATEGY workspace's trendline list — a module constant so the
+// derived value keeps one identity across renders and never re-fires
+// effects/memos that depend on it.
+const NO_TRENDLINES = [];
+
+// OPRSTRATEGY overlay: how many of the most recent daily opening ranges are
+// rendered. Detection is uncapped (computeOprRanges measures every day in the
+// mirror); like the SMC caps below this bounds series count only, most recent
+// wins. Gold ink — the workspace tab's own accent, and the metal the strategy
+// trades.
+const OPR_DAY_CAP = 12;
+const OPR_RGB = '240, 185, 11';
+
+// The one instrument OPRSTRATEGY trades: spot gold. The workspace pins the
+// chart to it; the analysis workspace's symbol stays in App state untouched
+// and comes back on switch, like the overlay selections below.
+const OPR_SYMBOL = 'XAUUSD';
+
+// Candles loaded for the live chart (~15.6 days of 15m, ~5.2 days of 5m,
+// ~3.1 days of 3m, ~25 hours of 1m).
 const LIVE_HISTORY_LIMIT = 1500;
 
 // Higher timeframes whose structure trend forms the trading bias. Ordered
@@ -44,26 +68,78 @@ const SWING_LOW_RGB = '38, 166, 154';
 // separately — see obIdm), so the worst case is twice its number.
 const IDM_LINE_CAP = 20;
 const CONNECTOR_CHAINS_PER_SIDE = 4;
+// Entry triggers are markers, not series, so the cost is layout rather than
+// GPU — but a thousand labels is unreadable long before it is slow. Most
+// recent wins, like every other cap here. Sized for the 'touch' contact rule,
+// which fires roughly once every 20 bars on 15m majors: 120 covers a full
+// LIVE_HISTORY_LIMIT window without trimming, so the cap is a backstop for
+// pathological series rather than something a normal chart runs into. The chip
+// tooltip says so when it does bite.
+const ENTRY_MARKER_CAP = 120;
 
-export function ChartPage({ symbol, interval, instruments, onSymbolChange, onIntervalChange }) {
+// Short labels rather than glyphs: size 0 renders text only, which is how this
+// app draws BOS/CHoCH and IDM, so entry triggers sit in the same visual
+// register instead of introducing a second marker language.
+const ENTRY_LABEL = { engulf: 'ENG', eat70: 'R70', morning: 'MDS' };
+
+export function ChartPage({
+  symbol: symbolRaw,
+  interval,
+  instruments,
+  workspace,
+  onWorkspaceChange,
+  onSymbolChange,
+  onIntervalChange,
+}) {
   const [history, setHistory] = useState(null);
   const [error, setError] = useState(null);
-  const [enabledTrendlines, setEnabledTrendlines] = useState([]);
+  const [enabledTrendlinesRaw, setEnabledTrendlines] = useState([]);
   const [trendlineCandles, setTrendlineCandles] = useState({});
   // Bumped when a replay session exits, to refetch live data that went stale
   // (and was deliberately not updated) while replaying.
   const [reloadKey, setReloadKey] = useState(0);
-  const [idmEnabled, setIdmEnabled] = useState(false);
-  const [msEnabled, setMsEnabled] = useState(false);
-  const [obEnabled, setObEnabled] = useState(false);
-  const [fvgEnabled, setFvgEnabled] = useState(false);
+  // { state: 'busy' | 'done' | 'error', text } for the repair button's own
+  // feedback. Kept separate from `error` (which blanks the chart) because a
+  // failed repair leaves the chart it was called from perfectly usable.
+  const [repair, setRepair] = useState(null);
+  const [idmEnabledRaw, setIdmEnabled] = useState(false);
+  const [msEnabledRaw, setMsEnabled] = useState(false);
+  const [obEnabledRaw, setObEnabled] = useState(false);
+  const [fvgEnabledRaw, setFvgEnabled] = useState(false);
   // Keep only order blocks whose move broke the summit that gave their bottom
   // (demand) / the valley that gave their top (supply). Its own toggle rather
   // than a rider on the IDM chip: IDM means "draw the inducement lines", and
   // quietly having it also delete most of the order blocks made zones vanish
   // for no visible reason.
-  const [idmObEnabled, setIdmObEnabled] = useState(false);
-  const [htfEnabled, setHtfEnabled] = useState(false);
+  const [idmObEnabledRaw, setIdmObEnabled] = useState(false);
+  // Buy-side candle triggers inside a demand zone on retest (see
+  // obRetestPatterns.js). Independent of the OB chip: the trigger is often what
+  // you want visible while the boxes themselves stay off.
+  const [entryEnabledRaw, setEntryEnabled] = useState(false);
+  const [htfEnabledRaw, setHtfEnabled] = useState(false);
+
+  // The OPRSTRATEGY workspace: bare candles plus its own overlay, the daily
+  // opening price range (the oprRanges memo below). Every OTHER auto overlay
+  // — the per-interval trendlines and the whole SMC suite — reads as OFF
+  // through the effective values below while the Raw selections stay
+  // untouched in state, so switching back to the analysis workspace restores
+  // the exact setup. Everything past this point uses the effective names; the
+  // Raw ones exist only to survive the round trip. (In the analysis workspace
+  // the two are identical, which is why the overlay menus can keep rendering
+  // the same variables they always did.)
+  const opr = workspace === 'opr';
+  // OPRSTRATEGY charts exactly one symbol: XAUUSD. The Raw prop (whatever the
+  // analysis workspace was on) survives untouched in App, so switching back
+  // restores it — same round-trip contract as the overlay selections.
+  const symbol = opr ? OPR_SYMBOL : symbolRaw;
+  const enabledTrendlines = opr ? NO_TRENDLINES : enabledTrendlinesRaw;
+  const idmEnabled = !opr && idmEnabledRaw;
+  const msEnabled = !opr && msEnabledRaw;
+  const obEnabled = !opr && obEnabledRaw;
+  const fvgEnabled = !opr && fvgEnabledRaw;
+  const idmObEnabled = !opr && idmObEnabledRaw;
+  const entryEnabled = !opr && entryEnabledRaw;
+  const htfEnabled = !opr && htfEnabledRaw;
   // The bars currently on the main chart, mirrored for the SMC computations
   // (market structure, order blocks and their inducements): live history + socket
   // ticks, or replay context + revealed bars. Kept in a ref (mutated in hot
@@ -73,7 +149,13 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
   const [barsVersion, setBarsVersion] = useState(0);
   const mainBarsRef = useRef([]);
   const smcActiveRef = useRef(false);
-  smcActiveRef.current = idmEnabled || msEnabled || obEnabled || fvgEnabled || idmObEnabled;
+  // entryEnabled is here because the entry markers recompute from the same
+  // mirror (via obData) — without it, an entry-only chart would freeze on the
+  // seed bars and never mark a new trigger. `opr` likewise: the OPRSTRATEGY
+  // workspace's opening-range overlay is always on there and reads the same
+  // mirror.
+  smcActiveRef.current =
+    idmEnabled || msEnabled || obEnabled || fvgEnabled || idmObEnabled || entryEnabled || opr;
   const chartRef = useRef(null);
   const channelCacheRef = useRef(new Map());
   // The active replay session's context bars (everything before the start
@@ -175,7 +257,11 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
   // already on: clear synchronously (mirrors the history-null above) so a
   // fast-resolving main fetch never paints stale prices onto the
   // freshly-remounted chart's trendlines while the slower per-interval
-  // re-fetch is still in flight.
+  // re-fetch is still in flight. Also re-runs on a workspace switch: the
+  // OPRSTRATEGY workspace unsubscribes the trendline intervals (combos below
+  // follow the effective list), so the bars they missed have to be refetched
+  // when the analysis workspace comes back — entering OPRSTRATEGY instead
+  // exits on the empty-list guard and touches nothing.
   useEffect(() => {
     if (enabledTrendlines.length === 0) return;
     let cancelled = false;
@@ -194,7 +280,7 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, reloadKey]);
+  }, [symbol, reloadKey, workspace]);
 
   const toggleTrendline = useCallback(
     (i) => {
@@ -491,13 +577,15 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
   // bearish ones. Fresh zones extend right; mitigated ones freeze dimmed at
   // their first tap. Caps bound rendering work only.
   const obData = useMemo(() => {
-    // Two consumers: the OB boxes overlay, and the IDM overlay — which draws
-    // each zone's inducement line even when the boxes themselves are off.
-    if (!obEnabled && !idmEnabled) return null;
+    // Three consumers: the OB boxes overlay, the IDM overlay — which draws
+    // each zone's inducement line even when the boxes themselves are off — and
+    // the entry-trigger markers, which need the zones to test containment
+    // against whether or not the boxes are drawn.
+    if (!obEnabled && !idmEnabled && !entryEnabled) return null;
     void barsVersion;
     void seedSource;
     return computeFvgOrderBlocks(mainBarsRef.current);
-  }, [obEnabled, idmEnabled, barsVersion, seedSource]);
+  }, [obEnabled, idmEnabled, entryEnabled, barsVersion, seedSource]);
 
   // Summit-break verdicts for the OB×IDM filter, one per zone: did the move
   // off this order block break the summit its decline fell from (demand) /
@@ -572,6 +660,96 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
     };
   }, [idmEnabled, obData, obTopBreaks]);
 
+  // --- OPRSTRATEGY overlay: each day's opening price range — the high/low of
+  // the 00:25–00:35 UTC window (the 00:25 and 00:30 candles on 5m; see
+  // opr.js) — as a box over the window plus high/low lines running to the end
+  // of that UTC day. Nothing shows until the window's second candle has
+  // closed and the size filter passed (r.valid). This overlay is the reason
+  // the workspace exists, so it is gated on the workspace itself rather than
+  // on a chip, and draws nothing anywhere else. Same mirror, same
+  // no-lookahead pattern as the SMC memos.
+  const oprRanges = useMemo(() => {
+    if (!opr) return null;
+    void barsVersion;
+    void seedSource;
+    return computeOprRanges(mainBarsRef.current);
+  }, [opr, barsVersion, seedSource]);
+
+  const oprSegments = useMemo(() => {
+    if (!oprRanges) return null;
+    const segs = [];
+    for (const r of oprRanges.slice(-OPR_DAY_CAP)) {
+      // Only valid ranges draw: the value is released on the first bar AFTER
+      // the window closes (no forming preview, no repaint — a replay steps
+      // through the same reveal) and only when the day's size passed the
+      // min/max filter. A range whose day ended right at the window
+      // (to === from: one-bar window, completed by the NEXT day's bar) has no
+      // span to draw a line over — the box still shows.
+      if (!r.valid || r.to <= r.from) continue;
+      for (const [side, value] of [['high', r.high], ['low', r.low]]) {
+        segs.push({
+          id: `opr:${side}:${r.id}`,
+          points: [
+            { time: r.from, value },
+            { time: r.to, value },
+          ],
+          color: `rgba(${OPR_RGB}, 0.9)`,
+          lineStyle: 'solid',
+          lineWidth: 2,
+        });
+      }
+    }
+    return segs;
+  }, [oprRanges]);
+
+  // The range's size written on the chart itself, above the high line
+  // (labelsPrimitive), pinned to the visible left edge while scrolled. One
+  // label per COMPLETED range — released the moment the 00:30 candle ends —
+  // green when the size sits inside the tradable 300–1900 pip band, red when
+  // outside it (where it is the only trace of that day: an out-of-band range
+  // draws no box or lines, and the red number over the window says why).
+  const oprLabels = useMemo(() => {
+    if (!oprRanges) return null;
+    const out = [];
+    for (const r of oprRanges.slice(-OPR_DAY_CAP)) {
+      if (!r.complete) continue;
+      out.push({
+        id: `opr-size:${r.id}`,
+        time1: r.from,
+        time2: r.valid && r.to > r.from ? r.to : r.windowEnd,
+        price: r.high,
+        text: `${r.sizePips.toFixed(1)} pips`,
+        color: r.valid ? '#26a69a' : '#ef5350',
+      });
+    }
+    return out;
+  }, [oprRanges]);
+
+  // Live RSI(14) of the chart interval for the OPRSTRATEGY header, from the
+  // same bars mirror — the last value tracks the forming candle like an
+  // on-chart RSI pane, and replay steps reproduce the same sequence. Gated on
+  // the workspace: only there is the mirror guaranteed active with no chips on.
+  const rsiValue = useMemo(() => {
+    if (!opr) return null;
+    void barsVersion;
+    void seedSource;
+    return computeRsi(mainBarsRef.current);
+  }, [opr, barsVersion, seedSource]);
+
+  const oprBoxes = useMemo(() => {
+    if (!oprRanges) return null;
+    // valid only — the box appears together with the lines once the window's
+    // second candle has closed, never while forming.
+    return oprRanges.slice(-OPR_DAY_CAP).filter((r) => r.valid).map((r) => ({
+      time1: r.from,
+      time2: r.windowEnd,
+      price1: r.high,
+      price2: r.low,
+      fillColor: `rgba(${OPR_RGB}, 0.1)`,
+      borderColor: `rgba(${OPR_RGB}, 0.35)`,
+    }));
+  }, [oprRanges]);
+
   // The chart takes one segments collection. Connectors go first for reading
   // order, not for z-order: lightweight-charts paints in series CREATION order
   // and the reconciler only creates a series the first time it sees an id, so
@@ -579,9 +757,9 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
   // existed. At 1px / 0.35 alpha that costs nothing visually, which is why it
   // is left alone rather than fixed with an explicit z option.
   const chartSegments = useMemo(() => {
-    if (!obIdm && !connectorSegments) return null;
-    return [...(connectorSegments ?? []), ...(obIdm?.segments ?? [])];
-  }, [obIdm, connectorSegments]);
+    if (!obIdm && !connectorSegments && !oprSegments) return null;
+    return [...(connectorSegments ?? []), ...(obIdm?.segments ?? []), ...(oprSegments ?? [])];
+  }, [obIdm, connectorSegments, oprSegments]);
 
   const obBoxes = useMemo(() => {
     // obData also feeds the IDM overlay now, so its presence no longer implies
@@ -670,6 +848,35 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
     return `${base} Showing ${obBoxes?.length ?? 0} — ${gate}${filter}.`;
   }, [obEnabled, obAllowedDir, obBoxes, htf.loading, idmObEnabled]);
 
+  // --- Entry triggers: buy-side reversal candles in contact with a demand zone
+  // while price was back in it — every candle of the pattern has its low at or
+  // below the zone top. Three shapes, one marker each (see obRetestPatterns.js
+  // for the rules, the contact modes and the noise guards).
+  const obEntries = useMemo(() => {
+    if (!entryEnabled || !obData) return null;
+    return computeObRetestPatterns(mainBarsRef.current, obData.boxes);
+  }, [entryEnabled, obData]);
+
+  // Like the OB chip, this one can legitimately render nothing (no demand zone
+  // has been retested with a qualifying candle yet), and an empty overlay looks
+  // identical to a broken one — so the tooltip reports the live breakdown.
+  const entryChipTitle = useMemo(() => {
+    const base =
+      'Buy triggers: full-range bullish engulfing (ENG — green body swallows ' +
+      "the red candle's whole high-low), a 70-100% body reversal with a lower " +
+      'wick over 70% of its own body (R70), or a morning doji star whose green ' +
+      'closes past the midpoint of the red body (MDS). ' +
+      'Every candle of the pattern must be in touch with a demand order ' +
+      'block — each low at or below the zone top.';
+    if (!entryEnabled) return `${base} Click to show them.`;
+    const hits = obEntries?.hits ?? [];
+    if (!hits.length) return `${base} None on this chart yet.`;
+    const n = (p) => hits.filter((h) => h.pattern === p).length;
+    const shown = Math.min(hits.length, ENTRY_MARKER_CAP);
+    const trimmed = hits.length > shown ? ` (most recent ${shown} shown)` : '';
+    return `${base} ${hits.length} found — ENG ${n('engulf')}, R70 ${n('eat70')}, MDS ${n('morning')}${trimmed}.`;
+  }, [entryEnabled, obEntries]);
+
   // --- Fair value gaps: every 3-candle imbalance, no size threshold. Open
   // gaps draw bright and extend right; filled ones stay visible as dimmed
   // boxes frozen at their fill bar. Caps bound the rendering work only —
@@ -702,9 +909,9 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
 
   // The chart takes one boxes collection — merge whichever zone features are on.
   const chartBoxes = useMemo(() => {
-    if (!obBoxes && !fvgBoxes) return null;
-    return [...(obBoxes ?? []), ...(fvgBoxes ?? [])];
-  }, [obBoxes, fvgBoxes]);
+    if (!obBoxes && !fvgBoxes && !oprBoxes) return null;
+    return [...(obBoxes ?? []), ...(fvgBoxes ?? []), ...(oprBoxes ?? [])];
+  }, [obBoxes, fvgBoxes, oprBoxes]);
 
   // Market structure: BOS/CHoCH labels on the break candles plus the current
   // direction for the header badge. Same mirror, same no-lookahead guarantees
@@ -730,6 +937,19 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
   }, [structure]);
   const msTrend = structure ? structure.trend : null;
 
+  // Below the bar and in the up-candle teal, because all three are longs.
+  const entryMarkers = useMemo(() => {
+    if (!obEntries) return null;
+    return obEntries.hits.slice(-ENTRY_MARKER_CAP).map((h) => ({
+      time: h.time,
+      position: 'belowBar',
+      color: `rgba(${SWING_LOW_RGB}, 1)`,
+      shape: 'arrowUp',
+      size: 0,
+      text: ENTRY_LABEL[h.pattern] ?? h.pattern,
+    }));
+  }, [obEntries]);
+
   // The chart takes ONE marker list, so structure labels and IDM takes are
   // merged here. lightweight-charts requires markers in ascending time order
   // and silently misplaces them otherwise; the two sources are each already
@@ -742,9 +962,11 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
   // ever loosening.
   const chartMarkers = useMemo(() => {
     const idmMarkers = idmEnabled && obIdm ? obIdm.markers : null;
-    if (!msMarkers && !idmMarkers) return null;
-    return [...(msMarkers ?? []), ...(idmMarkers ?? [])].sort((a, b) => a.time - b.time);
-  }, [msMarkers, obIdm, idmEnabled]);
+    if (!msMarkers && !idmMarkers && !entryMarkers) return null;
+    return [...(msMarkers ?? []), ...(idmMarkers ?? []), ...(entryMarkers ?? [])].sort(
+      (a, b) => a.time - b.time
+    );
+  }, [msMarkers, obIdm, idmEnabled, entryMarkers]);
 
   // Manual drawing tools (long/short positions, trend lines, boxes). Stored
   // per symbol+interval in memory for the session.
@@ -813,6 +1035,51 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
     [enabledTrendlines, activeTrendlineCandles, colorFor]
   );
 
+  // Repair the stored candles for the combo on screen, then reload the chart
+  // from them. Two distinct kinds of hole need this:
+  //   - the gap the background healer already knows how to fill but has given
+  //     up on (a window it recorded as unfillable on an earlier pass);
+  //   - an interior gap in XAUUSD, which nothing repairs automatically —
+  //     /history/ensure only ever extends the oldest edge and the background
+  //     healer skips forex, so a hole left by a long restart is otherwise
+  //     permanent.
+  // Deliberately manual: on forex most holes are the market calendar rather
+  // than lost data, so scanning them is a request per closure and belongs
+  // behind a click rather than on every subscribe.
+  const runRepair = useCallback(() => {
+    setRepair({ state: 'busy', text: 'Repairing…' });
+    repairHistory(symbol, interval)
+      .then(({ added, gaps, closed, remaining }) => {
+        // `remaining` is holes the run's page budget did not reach, so the press
+        // is resumable rather than complete — say so instead of reporting a
+        // clean result the user would take as final.
+        setRepair({
+          state: 'done',
+          text: added > 0
+            ? `+${added}${remaining > 0 ? ` · ${remaining} left` : ''}`
+            : remaining > 0
+              ? `${remaining} left`
+              : 'No gaps',
+        });
+        // Only worth repainting when bars actually landed.
+        if (added > 0) setReloadKey((k) => k + 1);
+        if (closed > 0 && added === 0) {
+          console.info(
+            `[repair] ${symbol} ${interval}: ${closed}/${gaps} gap(s) checked, provider had no bars for them ` +
+              '(for XAUUSD these are weekend closes and the daily settlement break, not lost data)'
+          );
+        }
+      })
+      .catch((err) => {
+        setRepair({ state: 'error', text: err.response?.data?.error ?? err.message });
+      });
+  }, [symbol, interval]);
+
+  // Stale feedback must not outlive the combo it described.
+  useEffect(() => {
+    setRepair(null);
+  }, [symbol, interval]);
+
   // Refetch live data on ANY replay exit — the ✕ button, but also the hook's
   // auto-exit on a symbol/interval switch or a failed replay load. Live
   // updates were ignored for the whole replay, so both history and trendline
@@ -825,84 +1092,137 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
     wasReplayingRef.current = replayActive;
   }, [replayActive]);
 
+  // The SMC overlays, as one vertical menu instead of seven chips across the
+  // header. Colors and tooltips are the chips' — only the layout moved.
+  // `gated` is "on, but currently drawing nothing": the toggle is enabled
+  // while a filter or the HTF gate withholds its output, so the row says so
+  // rather than looking plain broken.
+  const smcOptions = useMemo(
+    () => [
+      {
+        id: 'idm',
+        label: 'IDM',
+        color: '#f0b90b',
+        active: idmEnabled,
+        onToggle: () => setIdmEnabled((v) => !v),
+        hint:
+          "Each order block's own inducement — the top that created it: solid once the zone's move broke it, dotted while the break is pending — plus swing-to-swing connector chains",
+      },
+      {
+        id: 'ms',
+        label: 'Structure',
+        color: '#5c6bc0',
+        active: msEnabled,
+        onToggle: () => setMsEnabled((v) => !v),
+        hint: 'Label BOS/CHoCH breaks and show the current structure direction',
+      },
+      {
+        id: 'ob',
+        label: 'OB',
+        color: '#26c6da',
+        active: obEnabled,
+        gated: obEnabled && !obBoxes?.length,
+        note: obEnabled && !obBoxes?.length ? 'nothing to draw right now' : null,
+        onToggle: () => setObEnabled((v) => !v),
+        hint: obChipTitle,
+      },
+      {
+        id: 'obIdm',
+        label: 'OB×IDM',
+        color: '#ab47bc',
+        active: idmObEnabled,
+        onToggle: () => setIdmObEnabled((v) => !v),
+        hint:
+          'Keep only order blocks whose move broke their summit — for a demand zone, the nearest high above it that its decline fell from; for a supply zone, the nearest low below it that its rally rose from. The break must land no later than the bar that first trades back into the zone; zones still waiting on it stay hidden. This filter is strict, so the OB row dims when it leaves nothing.',
+      },
+      {
+        id: 'entry',
+        label: 'Entry',
+        color: '#26a69a',
+        active: entryEnabled,
+        gated: entryEnabled && !obEntries?.hits?.length,
+        note: entryEnabled && !obEntries?.hits?.length ? 'no triggers on this chart yet' : null,
+        onToggle: () => setEntryEnabled((v) => !v),
+        hint: entryChipTitle,
+      },
+      {
+        id: 'fvg',
+        label: 'FVG',
+        color: '#42a5f5',
+        active: fvgEnabled,
+        onToggle: () => setFvgEnabled((v) => !v),
+        hint: 'Draw open fair value gaps (3-candle imbalances) until price fills them',
+      },
+      {
+        id: 'htf',
+        label: 'HTF',
+        color: '#66bb6a',
+        active: htfEnabled,
+        onToggle: () => setHtfEnabled((v) => !v),
+        hint: 'Show 4h and 1h structure trend as higher-timeframe bias for lower-timeframe entries',
+      },
+    ],
+    [
+      idmEnabled,
+      msEnabled,
+      obEnabled,
+      obBoxes,
+      obChipTitle,
+      idmObEnabled,
+      entryEnabled,
+      obEntries,
+      entryChipTitle,
+      fvgEnabled,
+      htfEnabled,
+    ]
+  );
+
   return (
     <div className="chart-page">
       <div className="chart-header">
         <div className="chart-controls">
+          <WorkspaceSwitcher workspace={workspace} onChange={onWorkspaceChange} />
           <SymbolIntervalSelector
             symbol={symbol}
             interval={interval}
             symbols={instruments.symbols}
             intervals={instruments.intervals}
+            symbolLocked={opr}
             onSymbolChange={onSymbolChange}
             onIntervalChange={onIntervalChange}
           />
-          <TrendlineToggles
-            intervals={instruments.intervals}
-            enabled={enabledTrendlines}
-            colorFor={colorFor}
-            onToggle={toggleTrendline}
-          />
-          <div className="trendline-toggles">
-            <span className="trendline-label">SMC:</span>
-            <button
-              type="button"
-              title="Each order block's own inducement — the top that created it: solid once the zone's move broke it, dotted while the break is pending — plus swing-to-swing connector chains"
-              className={`trendline-chip ${idmEnabled ? 'active' : ''}`}
-              style={{ '--chip-color': '#f0b90b' }}
-              onClick={() => setIdmEnabled((v) => !v)}
-            >
-              IDM
-            </button>
-            <button
-              type="button"
-              title="Label BOS/CHoCH breaks and show the current structure direction"
-              className={`trendline-chip ${msEnabled ? 'active' : ''}`}
-              style={{ '--chip-color': '#5c6bc0' }}
-              onClick={() => setMsEnabled((v) => !v)}
-            >
-              Structure
-            </button>
-            {/* Muted when the chip is on but the HTF gate is currently
-                blocking, so "my order blocks vanished" has an answer on the
-                chip itself — the panel next to it says which way 4h/1h read. */}
-            <button
-              type="button"
-              title={obChipTitle}
-              className={`trendline-chip ${obEnabled ? 'active' : ''} ${obEnabled && !obBoxes?.length ? 'gated' : ''}`}
-              style={{ '--chip-color': '#26c6da' }}
-              onClick={() => setObEnabled((v) => !v)}
-            >
-              OB
-            </button>
-            <button
-              type="button"
-              title="Keep only order blocks whose move broke their summit — for a demand zone, the nearest high above it that its decline fell from; for a supply zone, the nearest low below it that its rally rose from. The break must land no later than the bar that first trades back into the zone; zones still waiting on it stay hidden. This filter is strict, so the OB chip dims when it leaves nothing."
-              className={`trendline-chip ${idmObEnabled ? 'active' : ''}`}
-              style={{ '--chip-color': '#ab47bc' }}
-              onClick={() => setIdmObEnabled((v) => !v)}
-            >
-              OB×IDM
-            </button>
-            <button
-              type="button"
-              title="Draw open fair value gaps (3-candle imbalances) until price fills them"
-              className={`trendline-chip ${fvgEnabled ? 'active' : ''}`}
-              style={{ '--chip-color': '#42a5f5' }}
-              onClick={() => setFvgEnabled((v) => !v)}
-            >
-              FVG
-            </button>
-            <button
-              type="button"
-              title="Show 4h and 1h structure trend as higher-timeframe bias for lower-timeframe entries"
-              className={`trendline-chip ${htfEnabled ? 'active' : ''}`}
-              style={{ '--chip-color': '#66bb6a' }}
-              onClick={() => setHtfEnabled((v) => !v)}
-            >
-              HTF
-            </button>
-          </div>
+          {/* The overlay menus belong to the analysis workspace — in
+              OPRSTRATEGY they are hidden outright rather than disabled, since
+              every row they could show is forced off anyway. */}
+          {!opr && (
+            <TrendlineToggles
+              intervals={instruments.intervals}
+              enabled={enabledTrendlines}
+              colorFor={colorFor}
+              onToggle={toggleTrendline}
+            />
+          )}
+          <button
+            type="button"
+            className={`repair-btn${repair ? ` repair-${repair.state}` : ''}`}
+            onClick={runRepair}
+            disabled={repair?.state === 'busy' || replayActive}
+            title={
+              replayActive
+                ? 'Exit replay to repair candles'
+                : `Re-scan stored ${symbol} ${interval} candles for gaps and refetch the missing bars from the provider, then reload the chart`
+            }
+          >
+            <span className="repair-icon" aria-hidden="true">⟳</span>
+            {repair ? repair.text : 'Repair'}
+          </button>
+          {!opr && (
+            <OptionsMenu
+              label="SMC"
+              title="Smart-money overlays: order blocks, structure, imbalances and higher-timeframe bias"
+              options={smcOptions}
+            />
+          )}
           <ReplayControls
             replay={replay}
             onExit={replay.exit}
@@ -920,6 +1240,14 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
           />
         </div>
         <div className="status-group">
+          {opr && rsiValue != null && (
+            <span
+              className={`rsi-value${rsiValue >= 70 ? ' rsi-overbought' : rsiValue <= 30 ? ' rsi-oversold' : ''}`}
+              title={`RSI(${RSI_PERIOD}) on the ${interval} chart, Wilder smoothing, forming candle included — ≥70 overbought, ≤30 oversold`}
+            >
+              RSI {rsiValue.toFixed(1)}
+            </span>
+          )}
           {htfEnabled && (
             <span className={`htf-bias ${htf.allBullish ? 'aligned-bull' : htf.allBearish ? 'aligned-bear' : ''}`}>
               {HTF_BIAS_INTERVALS.map((i) => {
@@ -949,8 +1277,10 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
         </div>
       </div>
       {/* Between the header and the chart: clicking a mover is just a symbol
-          change, so it goes through the same handler the search box uses. */}
-      <MoversBar symbol={symbol} onSymbolChange={onSymbolChange} />
+          change, so it goes through the same handler the search box uses.
+          Hidden in OPRSTRATEGY — the workspace is pinned to XAUUSD, and a
+          click here would silently retarget the analysis symbol instead. */}
+      {!opr && <MoversBar symbol={symbol} onSymbolChange={onSymbolChange} />}
       <div className={`chart-container ${draw.tool ? 'drawing' : ''}`}>
         {/* Drawing rail overlays the chart's left edge, TradingView-style.
             Rendered whenever a chart is on screen (live or replay). */}
@@ -989,6 +1319,7 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
             markers={chartMarkers}
             segments={chartSegments}
             boxes={chartBoxes}
+            labels={oprLabels}
             drawings={draw.drawings}
             selectedDrawingId={draw.selectedId}
             onChartClick={draw.handleChartClick}
@@ -1011,6 +1342,7 @@ export function ChartPage({ symbol, interval, instruments, onSymbolChange, onInt
             markers={chartMarkers}
             segments={chartSegments}
             boxes={chartBoxes}
+            labels={oprLabels}
             drawings={draw.drawings}
             selectedDrawingId={draw.selectedId}
             onChartClick={draw.handleChartClick}

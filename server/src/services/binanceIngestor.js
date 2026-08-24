@@ -2,8 +2,9 @@ import WebSocket from 'ws';
 import { config } from '../config.js';
 import { runBackfill } from './binanceBackfill.js';
 import { ensureCatalog, isCatalogReady, isTradableSymbol } from './spotCatalog.js';
+import { healGaps } from './gapHealer.js';
 import { fromWsKline, toWireShape } from '../utils/normalizeCandle.js';
-import { upsertCandle, getLatestOpenTime } from '../models/candleRepository.js';
+import { upsertCandle } from '../models/candleRepository.js';
 import { broadcastCandleUpdate } from '../sockets/socketServer.js';
 
 // The ingestor owns ONE Binance combined-stream connection whose subscriptions
@@ -124,13 +125,23 @@ export function acquireCombo(combo) {
     return false;
   }
 
-  // History for a never-charted pair is not this function's job: the read
-  // paths seed cold combos themselves (historyEnsurer.ensureSeeded), so
-  // duplicating a backfill here would only spend Binance weight twice. This
-  // subscription supplies the LIVE candle from here on.
+  // Seeding a never-charted pair is not this function's job: the read paths
+  // seed cold combos themselves (historyEnsurer.ensureSeeded), so duplicating
+  // that backfill here would only spend Binance weight twice. This subscription
+  // supplies the LIVE candle from here on.
   const entry = { ...norm, refs: 1, pinned: false };
   registry.set(key, entry);
   queueSubscribe(entry);
+
+  // What no read path can do is notice a hole in the MIDDLE of a combo it
+  // already has — ensureHistory only ever extends the oldest edge. On-demand
+  // pairs accumulate exactly that hole: nothing streamed this pair between two
+  // viewings, so no one ever requested the bars in between, and the live stream
+  // above will append to the right of the hole rather than close it. Acquiring
+  // is therefore when the healer runs — in the background and deliberately not
+  // awaited, so the chart is served from stored candles while the holes fill in
+  // behind it.
+  healGaps(norm).catch((err) => console.error(`[ingestor] gap heal FAILED for ${key}`, err.message));
   return true;
 }
 
@@ -168,12 +179,11 @@ export function releaseCombo(combo) {
 
 // --- Backfill --------------------------------------------------------------
 
-async function backfillCombos(combos, { startTimes, limit } = {}) {
+async function backfillCombos(combos, { limit } = {}) {
   for (const combo of combos) {
     const { symbol, interval } = combo;
     try {
-      const startTime = startTimes?.get(`${symbol}:${interval}`);
-      const count = await runBackfill({ symbol, interval, startTime, limit });
+      const count = await runBackfill({ symbol, interval, limit });
       console.log(`[ingestor] backfill for ${symbol} ${interval}: upserted ${count} candles`);
     } catch (err) {
       // One bad/rate-limited combo must not block backfill for the rest.
@@ -206,20 +216,32 @@ export async function startIngestor({ combos, backfillLimit }) {
   async function connect() {
     wsOpen = false;
     // Gap recovery: catch up every registered combo on anything missed while
-    // disconnected before resubscribing (also covers Binance's forced 24h
-    // disconnect). Snapshotted because on-demand combos can come and go while
-    // the paced backfill runs.
+    // disconnected (this also covers Binance's forced 24h disconnect).
+    //
+    // healGaps pages until each hole is actually closed. A single forward
+    // request could not: it returns at most 1000 bars, so a disconnect longer
+    // than that — only ~3.5 days at 5m — used to leave the remainder missing
+    // forever, since the live stream resumes to the right of the hole and
+    // nothing ever revisits it.
+    //
+    // Deliberately NOT awaited before resubscribing, unlike the single-page
+    // catch-up this replaced: paging a week-long hole across every combo would
+    // hold the live feed down for minutes, and the live feed is what the UI is
+    // actually waiting on. Racing the stream is safe — healGaps reads the
+    // stored run when it runs, so a candle the stream writes mid-heal only
+    // shrinks the trailing hole, and upserts are keyed and idempotent.
+    // Snapshotted because on-demand combos can come and go while it runs.
     const active = [...registry.values()];
-    try {
-      const startTimes = new Map();
-      for (const { symbol, interval } of active) {
-        const latestOpenTime = await getLatestOpenTime({ symbol, interval });
-        if (latestOpenTime) startTimes.set(`${symbol}:${interval}`, latestOpenTime);
+    void (async () => {
+      for (const combo of active) {
+        try {
+          await healGaps(combo);
+        } catch (err) {
+          // One bad or rate-limited combo must not block recovery for the rest.
+          console.error(`[ingestor] gap-fill FAILED for ${combo.symbol} ${combo.interval}`, err.message);
+        }
       }
-      await backfillCombos(active, { startTimes });
-    } catch (err) {
-      console.error('[ingestor] gap-fill backfill pass failed', err);
-    }
+    })();
 
     // Build the URL from the registry as it stands NOW — anything acquired
     // during the backfill above is included here instead of waiting on a

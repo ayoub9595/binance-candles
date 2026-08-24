@@ -5,7 +5,7 @@ import { config } from './config.js';
 import { connectMongo, closeMongo } from './db/mongoClient.js';
 import { initSocketServer } from './sockets/socketServer.js';
 import { acquireCombo, releaseCombo, startIngestor } from './services/binanceIngestor.js';
-import { acquireForexCombo, releaseForexCombo, startForexFeed } from './services/derivFeed.js';
+import { acquireForexCombo, releaseForexCombo, startForexFeed } from './services/forexProvider.js';
 import { isForexSymbol } from './services/forexInstruments.js';
 import { startCatalogRefresh } from './services/spotCatalog.js';
 import { candlesRouter } from './routes/candles.js';
@@ -36,8 +36,8 @@ async function main() {
   const httpServer = createServer(app);
   // Browser subscriptions drive upstream subscriptions — a pair outside the
   // configured set gets a stream while someone is watching it, and loses it
-  // when the last viewer leaves. Forex symbols route to the Deriv feed,
-  // everything else to the Binance ingestor.
+  // when the last viewer leaves. Forex symbols route to the configured forex
+  // provider (Deriv or cTrader), everything else to the Binance ingestor.
   initSocketServer(httpServer, config.corsOrigin, {
     onSubscribe: (combo) => (isForexSymbol(combo?.symbol) ? acquireForexCombo(combo) : acquireCombo(combo)),
     onUnsubscribe: (combo) => (isForexSymbol(combo?.symbol) ? releaseForexCombo(combo) : releaseCombo(combo)),

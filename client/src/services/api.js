@@ -47,3 +47,14 @@ export async function ensureHistory(symbol, interval, fromMs) {
   const { data } = await client.post('/api/history/ensure', { symbol, interval, fromMs });
   return data;
 }
+
+// Re-scan this combo's stored candles for holes and page the missing bars in
+// from the provider. Unlike ensureHistory (which only ever deepens the oldest
+// edge) this repairs gaps in the MIDDLE of the stored range, and it retries
+// windows an earlier automatic pass gave up on. Can take a while — the server
+// pages upstream under a shared rate budget.
+// Returns { filled, gaps, closed, scanned, oldestMs, newestMs }.
+export async function repairHistory(symbol, interval) {
+  const { data } = await client.post('/api/history/repair', { symbol, interval });
+  return data;
+}
