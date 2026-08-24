@@ -10,15 +10,27 @@ from fair value gaps. Stdlib only — no dependencies, Python 3.9+.
 1. **FVG trigger** — the classic 3-candle imbalance:
    - Bullish: candle 3's low strictly above candle 1's high.
    - Bearish: candle 3's high strictly below candle 1's low.
-2. **The order block** is candle 1 (the candle *before* the displacement
-   candle) — the origin the imbalance launched from. The zone is that
-   candle's full high–low range.
-3. **Origin filters** (both compared against the candle right before the
-   origin; a pattern with no such baseline candle is skipped):
-   - *Wick*: the origin must show stronger rejection — strictly larger lower
-     wick for a demand OB, strictly larger upper wick for a supply OB.
-   - *Position*: the origin must sit entirely lower than its predecessor for
-     a demand OB (lower high AND lower low), entirely higher for supply.
+2. **The order block** starts as candle 1 (the candle *before* the
+   displacement candle) — the origin the imbalance launched from — and the
+   zone is that candle's full high–low range.
+3. **Origin resolution** walks back from candle 1. With `cand` the current
+   candidate, `prev` the candle behind it and the gap's *far edge* being
+   candle 3's low (demand) or high (supply):
+   - *Reach* — `cand` extends past `prev` on its own side (`cand.low <=
+     prev.low` for demand, `cand.high >= prev.high` for supply): `cand` is
+     the order block. Ties count, and nothing is asked of the other side.
+   - *Eaten* — `prev` engulfs `cand` outright (higher high **and** lower
+     low). Then the zone **moves back onto `prev`**, provided `prev` still
+     keeps a gap against candle 3 (`prev.high <` far edge for demand,
+     `prev.low >` far edge for supply), and the walk repeats from there — so
+     a run of nested engulfing candles resolves to the earliest one that
+     still leaves an imbalance. If `prev` traded through the whole gap, the
+     walk stops and keeps `cand`, the last one that does keep it.
+   - *Neither* — `cand` sits entirely on top of (demand) or under (supply)
+     `prev`: no zone. Running out of history also yields no zone.
+   Rules 1 and 2 are mutually exclusive, so their test order cannot matter.
+   Because origins relocate, two gaps can resolve onto the same candle; the
+   earliest-detected one wins, so there is one zone per origin per side.
 4. **Lifecycle**: the zone stays *fresh* while price keeps away. The first
    wick back into it (bullish: `low <= top`; bearish: `high >= bottom`)
    *mitigates* it and freezes the box at that bar.
@@ -100,8 +112,9 @@ same network), `--no-web` to disable. The API behind it is
 | Table column   | JSON key       | Meaning                                            |
 |----------------|----------------|----------------------------------------------------|
 | DIR            | `dir`          | `bullish` (demand) or `bearish` (supply)           |
-| TOP / BOTTOM   | `top`/`bottom` | zone bounds = origin candle's high/low             |
-| ORIGIN         | `fromTime`     | origin candle open time (epoch sec in JSON)        |
+| TOP / BOTTOM   | `top`/`bottom` | zone bounds = resolved origin candle's high/low    |
+| ORIGIN         | `fromTime`     | resolved origin open time (epoch sec in JSON) —    |
+|                |                | may sit further back than the gap's first candle   |
 | DETECTED       | `detectedTime` | gap's third candle — when the zone became known    |
 | UNTIL          | `toTime`       | mitigation bar for tapped zones, last bar if fresh |
 | STATUS         | `mitigated`    | `FRESH` / `mitigated`                              |

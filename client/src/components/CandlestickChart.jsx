@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import { createChart, createSeriesMarkers, CandlestickSeries, LineSeries, LineStyle } from 'lightweight-charts';
 import { RectanglesPrimitive } from './rectanglesPrimitive.js';
+import { LabelsPrimitive } from './labelsPrimitive.js';
 import { DrawingsPrimitive } from './drawingsPrimitive.js';
 
 // Segment line styles arrive as plain strings so the callers (and the utils
@@ -45,6 +46,7 @@ export const CandlestickChart = forwardRef(function CandlestickChart(
     markers,
     segments,
     boxes,
+    labels,
     drawings,
     selectedDrawingId,
     onChartClick,
@@ -61,6 +63,7 @@ export const CandlestickChart = forwardRef(function CandlestickChart(
   const markersApiRef = useRef(null);
   const segmentSeriesRef = useRef(new Map());
   const boxesPrimitiveRef = useRef(null);
+  const labelsPrimitiveRef = useRef(null);
   const drawingsPrimitiveRef = useRef(null);
   // Click handler lives in a ref so subscribing once at mount still calls the
   // latest callback — resubscribing per render would thrash the chart.
@@ -115,6 +118,9 @@ export const CandlestickChart = forwardRef(function CandlestickChart(
     markersApiRef.current = createSeriesMarkers(series, []);
     boxesPrimitiveRef.current = new RectanglesPrimitive();
     series.attachPrimitive(boxesPrimitiveRef.current);
+    // Text labels above the boxes so values stay readable over the fills.
+    labelsPrimitiveRef.current = new LabelsPrimitive();
+    series.attachPrimitive(labelsPrimitiveRef.current);
     // Attached after the zone boxes so user drawings paint on top of them.
     drawingsPrimitiveRef.current = new DrawingsPrimitive();
     series.attachPrimitive(drawingsPrimitiveRef.current);
@@ -243,6 +249,7 @@ export const CandlestickChart = forwardRef(function CandlestickChart(
       chartInstanceRef.current = null;
       markersApiRef.current = null;
       boxesPrimitiveRef.current = null;
+      labelsPrimitiveRef.current = null;
       drawingsPrimitiveRef.current = null;
       segmentSeriesRef.current.clear();
       trendlineSeriesRef.current.clear();
@@ -343,6 +350,11 @@ export const CandlestickChart = forwardRef(function CandlestickChart(
   useEffect(() => {
     boxesPrimitiveRef.current?.setRects(boxes || []);
   }, [boxes]);
+
+  // Floating text labels (OPR values) — their own primitive layer.
+  useEffect(() => {
+    labelsPrimitiveRef.current?.setLabels(labels || []);
+  }, [labels]);
 
   // User drawings (positions, lines, boxes) — their own primitive layer.
   useEffect(() => {

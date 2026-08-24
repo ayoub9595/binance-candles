@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { getCollection } from '../db/mongoClient.js';
 import { getStreamStats } from '../services/binanceIngestor.js';
-import { getForexStats } from '../services/derivFeed.js';
+import { getForexStats } from '../services/forexProvider.js';
 import { catalogSize } from '../services/spotCatalog.js';
 
 export const healthRouter = Router();

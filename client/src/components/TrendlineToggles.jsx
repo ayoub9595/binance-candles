@@ -1,18 +1,21 @@
+import { OptionsMenu } from './OptionsMenu.jsx';
+
+// One dropdown for the per-interval trendline overlays. The interval's own
+// series color is the row's swatch, so the menu reads the same way the chips
+// did — just stacked instead of strung across the header.
 export function TrendlineToggles({ intervals, enabled, colorFor, onToggle }) {
   return (
-    <div className="trendline-toggles">
-      <span className="trendline-label">Trend lines:</span>
-      {intervals.map((i) => (
-        <button
-          key={i}
-          type="button"
-          className={`trendline-chip ${enabled.includes(i) ? 'active' : ''}`}
-          style={{ '--chip-color': colorFor(i) }}
-          onClick={() => onToggle(i)}
-        >
-          {i}
-        </button>
-      ))}
-    </div>
+    <OptionsMenu
+      label="Trend lines"
+      title="Swing trendlines drawn per interval"
+      options={intervals.map((i) => ({
+        id: i,
+        label: i,
+        hint: `${i} swing trendlines`,
+        color: colorFor(i),
+        active: enabled.includes(i),
+        onToggle: () => onToggle(i),
+      }))}
+    />
   );
 }

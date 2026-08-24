@@ -1,8 +1,6 @@
-import { fetchKlines } from './binanceRest.js';
-import { fetchForexKlines } from './derivFeed.js';
-import { isForexSymbol } from './forexInstruments.js';
+import { fetchCandlePage } from './candleSource.js';
 import { isTradableSymbol } from './spotCatalog.js';
-import { fromRestKline } from '../utils/normalizeCandle.js';
+import { pace } from './upstreamPacer.js';
 import { bulkUpsertCandles, getOldestOpenTime, getLatestOpenTime } from '../models/candleRepository.js';
 
 // The startup backfill only keeps the most recent BACKFILL_LIMIT candles, so
@@ -15,29 +13,13 @@ import { bulkUpsertCandles, getOldestOpenTime, getLatestOpenTime } from '../mode
 // or ~2.3 years of 5m — a runaway-request backstop, not a practical limit.
 const MAX_PAGES = 240;
 
-// Global pacing across all concurrent walks. Klines at limit=1000 cost 5
-// weight; one page per 300ms keeps worst-case usage near 1000 weight/min,
-// under Binance's 1200/min budget even with the live ingestor running.
-const PAGE_GAP_MS = 300;
-let nextSlotAt = 0;
+// Pacing is shared with the gap healer via upstreamPacer.js — both page against
+// the same Binance weight budget, so they must draw from one slot clock.
 
-function pace() {
-  const now = Date.now();
-  const at = Math.max(now, nextSlotAt);
-  nextSlotAt = at + PAGE_GAP_MS;
-  return at > now ? new Promise((resolve) => setTimeout(resolve, at - now)) : Promise.resolve();
-}
-
-// Both providers speak the same paging dialect — `endTime` with no start
-// returns the newest `limit` candles at or before that instant — so the walk
-// below only needs one seam: which fetcher turns a page into candle docs.
-async function fetchPage({ symbol, interval, endTime, limit }) {
-  if (isForexSymbol(symbol)) {
-    return fetchForexKlines({ symbol, interval, endTime, limit });
-  }
-  const raw = await fetchKlines({ symbol, interval, endTime, limit });
-  return raw.map((k) => fromRestKline(k, symbol, interval));
-}
+// Both providers speak the same BACKWARD paging dialect — `endTime` with no
+// start returns the newest `limit` candles at or before that instant — which is
+// exactly what the walk below and the cold seed need. services/candleSource.js
+// owns that seam (the gap healer's forward paging shares it).
 
 async function walkBack({ symbol, interval, fromMs }) {
   // Nothing stored at all (combo added but ingestor not caught up yet):
@@ -48,7 +30,7 @@ async function walkBack({ symbol, interval, fromMs }) {
   while (oldest > fromMs && pages < MAX_PAGES) {
     await pace();
     // One page further into the past.
-    const candles = await fetchPage({ symbol, interval, endTime: oldest - 1, limit: 1000 });
+    const candles = await fetchCandlePage({ symbol, interval, endTime: oldest - 1, limit: 1000 });
     if (candles.length === 0) break; // ran out of history (before the symbol listed)
     await bulkUpsertCandles(candles);
     const pageOldest = candles[0].openTime;
@@ -102,7 +84,7 @@ const SEED_LIMIT = 1000;
 async function seed({ symbol, interval }) {
   await pace();
   // No endTime: both providers return the most recent SEED_LIMIT candles.
-  const candles = await fetchPage({ symbol, interval, limit: SEED_LIMIT });
+  const candles = await fetchCandlePage({ symbol, interval, limit: SEED_LIMIT });
   if (candles.length === 0) return 0;
   await bulkUpsertCandles(candles);
   console.log(`[history] seeded cold combo ${symbol} ${interval}: ${candles.length} candles`);

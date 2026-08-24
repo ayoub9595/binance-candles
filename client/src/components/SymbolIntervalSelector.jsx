@@ -2,11 +2,19 @@ import { SymbolSearch } from './SymbolSearch.jsx';
 
 // `symbols` is the server's configured set — the pairs it streams by default.
 // They are the shortlist the search opens on, not the limit of what can be
-// charted; anything on Binance spot is reachable by typing.
-export function SymbolIntervalSelector({ symbol, interval, symbols, intervals, onSymbolChange, onIntervalChange }) {
+// charted; anything on Binance spot is reachable by typing. `symbolLocked`
+// swaps the search for a static badge — the OPRSTRATEGY workspace pins the
+// chart to one symbol, so offering a search there would be a lie.
+export function SymbolIntervalSelector({ symbol, interval, symbols, intervals, symbolLocked, onSymbolChange, onIntervalChange }) {
   return (
     <div className="selector-bar">
-      <SymbolSearch symbol={symbol} defaultSymbols={symbols} onSymbolChange={onSymbolChange} />
+      {symbolLocked ? (
+        <span className="symbol-locked" title="OPRSTRATEGY trades spot gold only — switch to Analysis to chart other symbols">
+          {symbol}
+        </span>
+      ) : (
+        <SymbolSearch symbol={symbol} defaultSymbols={symbols} onSymbolChange={onSymbolChange} />
+      )}
       <div className="interval-toggle">
         {intervals.map((i) => (
           <button

@@ -19,7 +19,7 @@ export const REPLAY_FORWARD_LIMIT = FORWARD_LIMIT;
 const REFILL_MARGIN = 50;
 
 // Playback speeds in candles per second.
-export const REPLAY_SPEEDS = [1, 2, 5, 10];
+export const REPLAY_SPEEDS = [1, 2, 3, 5, 10, 20];
 
 const INTERVAL_UNIT_SEC = { m: 60, h: 3600, d: 86400, w: 604800, M: 2592000 };
 

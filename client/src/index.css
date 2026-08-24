@@ -87,6 +87,24 @@ html, body, #root {
   border-color: #26a69a;
 }
 
+/* The pinned-symbol badge OPRSTRATEGY shows in place of the search: same
+   footprint and type as the closed search field, but inert, with the
+   workspace's gold accent saying "this is the strategy's instrument". */
+.symbol-locked {
+  display: inline-block;
+  box-sizing: border-box;
+  background: #1e222d;
+  color: #f0b90b;
+  border: 1px solid #2a2e39;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  width: 150px;
+  cursor: default;
+}
+
 .symbol-search-input:focus {
   outline: none;
   border-color: #26a69a;
@@ -348,51 +366,210 @@ html, body, #root {
   gap: 20px;
 }
 
-.trendline-toggles {
+/* ── Workspace switcher ────────────────────────────────────────────────────
+   Two layouts for the same chart: the full analysis workspace and
+   OPRSTRATEGY, a bare price-action one. A segmented pair rather than a
+   dropdown — one glance says which is live, one click switches. */
+.workspace-switcher {
+  display: flex;
+  background: #1e222d;
+  border: 1px solid #2a2e39;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.workspace-tab {
+  background: none;
+  border: none;
+  color: #787b86;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.workspace-tab + .workspace-tab {
+  border-left: 1px solid #2a2e39;
+}
+
+.workspace-tab:hover {
+  color: #d1d4dc;
+}
+
+/* Active tab takes the same accent the options badge uses, so "which
+   workspace am I in" reads at the same glance level as "how many overlays
+   are on". */
+.workspace-tab.active {
+  background: #262b38;
+  color: #f0b90b;
+  font-weight: 600;
+}
+
+/* ── Navbar option dropdowns ───────────────────────────────────────────────
+   The overlay toggles used to be one long horizontal chip row per group,
+   which pushed the replay controls and status badges off the header on
+   narrower windows. Each group is now a single trigger button whose panel
+   stacks the options vertically over the chart. */
+.options-menu {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.options-trigger {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-.trendline-label {
-  color: #787b86;
-  font-size: 12px;
-  margin-right: 2px;
-}
-
-.trendline-chip {
   background: #1e222d;
   color: #d1d4dc;
   border: 1px solid #2a2e39;
   border-radius: 4px;
-  padding: 6px 12px;
+  padding: 6px 10px;
   font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.options-trigger:hover,
+.options-trigger.open {
+  border-color: #4a5164;
+}
+
+.options-trigger.open {
+  background: #262b38;
+}
+
+/* With the chips collapsed, this badge is the only thing on the header saying
+   how many overlays are live — so it stays visible whether the panel is open
+   or shut. */
+.options-count {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #2a2e39;
+  color: #9aa0ae;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+}
+
+.options-trigger.has-active .options-count {
+  background: #f0b90b;
+  color: #0d0f14;
+}
+
+.options-caret {
+  color: #787b86;
+  transition: transform 0.12s ease;
+}
+
+.options-trigger.open .options-caret {
+  transform: rotate(180deg);
+}
+
+/* Floats over the chart rather than pushing the header around — same
+   treatment as the symbol search panel. */
+.options-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  min-width: 190px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: #161a25;
+  border: 1px solid #2a2e39;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.options-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 9px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: #d1d4dc;
+  font-size: 13px;
+  text-align: left;
   cursor: pointer;
 }
 
-.trendline-chip:hover {
+.options-row:hover {
+  background: #1e2330;
+}
+
+/* The swatch carries the overlay's own color, so the menu keeps the chips'
+   color-coding: hollow when off, filled with a checkmark when on. */
+.options-mark {
+  position: relative;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 1px solid #3a3f4d;
+  border-radius: 3px;
+}
+
+.options-row.active .options-mark {
+  background: var(--chip-color);
   border-color: var(--chip-color);
 }
 
-.trendline-chip.active {
-  background: var(--chip-color);
-  border-color: var(--chip-color);
-  color: #0d0f14;
+.options-row.active .options-mark::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 1px;
+  width: 5px;
+  height: 8px;
+  border: solid #0d0f14;
+  border-width: 0 1.8px 1.8px 0;
+  transform: rotate(40deg);
+}
+
+.options-row.active .options-name {
+  color: var(--chip-color);
   font-weight: 600;
 }
 
-/* "On, but currently suppressed" — the feature is enabled while a gate (HTF
-   alignment for OB) is withholding its output. Reads as an outline of the
-   active chip rather than a new color: dashed says "conditional", the dimming
-   says "nothing on the chart right now". Must follow .active to win the
-   equal-specificity tie, since a gated chip is always also active. */
-.trendline-chip.gated {
+/* "On, but currently suppressed" — enabled while a gate (HTF alignment for
+   OB, an unmet retest for Entry) withholds its output. Dashed says
+   "conditional"; the note underneath says nothing is on the chart right now.
+   Must follow .active to win the equal-specificity tie, since a gated row is
+   always also active. */
+.options-row.gated .options-mark {
   background: transparent;
   border-style: dashed;
   border-color: var(--chip-color);
-  color: var(--chip-color);
+}
+
+.options-row.gated .options-mark::after {
+  border-color: var(--chip-color);
+}
+
+.options-row.gated .options-name {
   font-weight: 400;
-  opacity: 0.65;
+  opacity: 0.75;
+}
+
+.options-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.options-note {
+  color: #787b86;
+  font-size: 10px;
+  font-style: normal;
 }
 
 .status.replaying {
@@ -417,6 +594,22 @@ html, body, #root {
 
 .status.structure-none {
   color: #787b86;
+}
+
+/* RSI readout: neutral until the classic bands are hit. */
+.rsi-value {
+  color: #d1d4dc;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rsi-value.rsi-overbought {
+  color: #ef5350;
+}
+
+.rsi-value.rsi-oversold {
+  color: #26a69a;
 }
 
 /* Higher-timeframe bias panel: one cell per timeframe plus an alignment
@@ -817,4 +1010,60 @@ html, body, #root {
 .replay-error {
   color: #ef5350;
   font-size: 12px;
+}
+
+/* --- Repair candles button (header) ---
+   Refetches the gaps in the combo on screen. Styled as a quiet neutral
+   control, not a primary action: it is a maintenance escape hatch, and the
+   states below are the only feedback it gives. */
+
+.repair-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: #1e222d;
+  color: #d1d4dc;
+  border: 1px solid #2a2e39;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.repair-btn:hover:not(:disabled) {
+  border-color: #26a69a;
+}
+
+.repair-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.repair-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* Only the in-flight state spins — a finished repair keeps the glyph still so
+   the row does not read as "still working". */
+.repair-busy .repair-icon {
+  animation: repair-spin 900ms linear infinite;
+}
+
+.repair-done {
+  border-color: #26a69a;
+  color: #26a69a;
+}
+
+.repair-error {
+  border-color: #ef5350;
+  color: #ef5350;
+}
+
+@keyframes repair-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
